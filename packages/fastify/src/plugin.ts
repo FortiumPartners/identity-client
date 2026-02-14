@@ -1,0 +1,284 @@
+/**
+ * Fastify plugin for Fortium Identity OIDC authentication.
+ *
+ * Registers auth routes (/auth/login, /auth/callback, /auth/me, etc.)
+ * and enforces the standard OIDC flow with signed httpOnly cookies.
+ *
+ * Apps customize behavior via hooks (authorize, getMe) — not by
+ * reimplementing the OIDC flow.
+ */
+
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import fp from 'fastify-plugin';
+import '@fastify/cookie'; // Type augmentations for cookies
+import {
+  IdentityClient,
+  createSessionToken,
+  verifySessionToken,
+} from '@fortium/identity-client';
+import type { FortiumClaims, OIDCState, SessionPayload } from '@fortium/identity-client';
+
+export interface IdentityPluginOptions {
+  /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com) */
+  issuer: string;
+  /** OIDC client ID */
+  clientId: string;
+  /** OIDC client secret */
+  clientSecret: string;
+  /** Full callback URL (e.g., https://app.example.com/auth/callback) */
+  callbackUrl: string;
+  /** Frontend URL for redirects after login/logout */
+  frontendUrl: string;
+  /** Secret for signing session JWTs */
+  jwtSecret: string;
+  /** Issuer name for session JWTs (e.g., 'gateway', 'payouts') */
+  sessionIssuer: string;
+  /** Session JWT expiry (default: '24h') */
+  sessionExpiresIn?: string;
+  /** Cookie name prefix (default: '') */
+  cookiePrefix?: string;
+  /** Where to redirect after successful login (default: frontendUrl + '/dashboard') */
+  postLoginPath?: string;
+  /** Where Identity redirects after logout (default: frontendUrl + '/login') */
+  postLogoutPath?: string;
+
+  /**
+   * Called after Identity authenticates the user.
+   * Use to check authorization (e.g., admin allowlist) and return extra session data.
+   * Throw to reject the login. Return extra fields to include in the session JWT.
+   */
+  authorize?: (claims: FortiumClaims) => Promise<Record<string, unknown>>;
+
+  /**
+   * Called by GET /auth/me to build the response from the session.
+   * If not provided, returns { user: { fortiumUserId, email } }.
+   */
+  getMe?: (session: SessionPayload) => Promise<Record<string, unknown>>;
+}
+
+// Cookie name helpers
+function cookieName(prefix: string, name: string): string {
+  return prefix ? `${prefix}_${name}` : name;
+}
+
+async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOptions) {
+  const prefix = opts.cookiePrefix || '';
+  const OIDC_STATE_COOKIE = cookieName(prefix, 'oidc_state');
+  const AUTH_TOKEN_COOKIE = cookieName(prefix, 'auth_token');
+  const ID_TOKEN_COOKIE = cookieName(prefix, 'id_token');
+  const REFRESH_TOKEN_COOKIE = cookieName(prefix, 'refresh_token');
+
+  const isProd = process.env.NODE_ENV === 'production';
+
+  const client = new IdentityClient({
+    issuer: opts.issuer,
+    clientId: opts.clientId,
+    clientSecret: opts.clientSecret,
+  });
+
+  const sessionConfig = {
+    jwtSecret: opts.jwtSecret,
+    issuer: opts.sessionIssuer,
+    expiresIn: opts.sessionExpiresIn || '24h',
+  };
+
+  const postLoginRedirect = opts.postLoginPath
+    ? `${opts.frontendUrl}${opts.postLoginPath}`
+    : `${opts.frontendUrl}/dashboard`;
+
+  const postLogoutRedirect = opts.postLogoutPath
+    ? `${opts.frontendUrl}${opts.postLogoutPath}`
+    : `${opts.frontendUrl}/login`;
+
+  // Helper: standard cookie options
+  function cookieOpts(maxAge: number) {
+    return {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax' as const,
+      maxAge,
+      path: '/',
+      signed: true,
+    };
+  }
+
+  // Helper: unsign a cookie, return value or null
+  function unsign(request: FastifyRequest, name: string): string | null {
+    const raw = request.cookies[name];
+    if (!raw) return null;
+    const unsigned = request.unsignCookie(raw);
+    if (!unsigned.valid || !unsigned.value) return null;
+    return unsigned.value;
+  }
+
+  // ------------------------------------------------------------------
+  // GET /auth/login — Redirect to Identity for OIDC authentication
+  // ------------------------------------------------------------------
+  app.get('/auth/login', async (_request, reply) => {
+    const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
+
+    reply.setCookie(OIDC_STATE_COOKIE, JSON.stringify(state), cookieOpts(600));
+    reply.redirect(url);
+  });
+
+  // ------------------------------------------------------------------
+  // GET /auth/callback — Handle OIDC callback, exchange code, set cookies
+  // ------------------------------------------------------------------
+  app.get('/auth/callback', async (request, reply) => {
+    try {
+      const { code, state } = request.query as { code?: string; state?: string };
+
+      if (!code || !state) {
+        return reply.redirect(`${opts.frontendUrl}/auth/error?reason=invalid_callback`);
+      }
+
+      // Validate OIDC state from cookie
+      const stateValue = unsign(request, OIDC_STATE_COOKIE);
+      if (!stateValue) {
+        return reply.redirect(`${opts.frontendUrl}/auth/error?reason=state_missing`);
+      }
+
+      const oidcState: OIDCState = JSON.parse(stateValue);
+      if (state !== oidcState.state) {
+        return reply.redirect(`${opts.frontendUrl}/auth/error?reason=state_mismatch`);
+      }
+
+      reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+
+      // Exchange code for tokens
+      const { idToken, refreshToken, claims } = await client.exchangeCode(code, oidcState);
+
+      // Run authorize hook — apps check permissions, upsert records, etc.
+      let extraSessionData: Record<string, unknown> = {};
+      if (opts.authorize) {
+        try {
+          extraSessionData = await opts.authorize(claims);
+        } catch (authError) {
+          const reason = authError instanceof Error ? authError.message : 'not_authorized';
+          return reply.redirect(`${opts.frontendUrl}/auth/error?reason=${encodeURIComponent(reason)}`);
+        }
+      }
+
+      // Create session JWT
+      const sessionPayload: SessionPayload = {
+        fortiumUserId: claims.fortium_user_id,
+        email: claims.email,
+        ...extraSessionData,
+      };
+      const sessionToken = await createSessionToken(sessionPayload, sessionConfig);
+
+      // Set cookies
+      reply.setCookie(AUTH_TOKEN_COOKIE, sessionToken, cookieOpts(86400)); // 24h
+      reply.setCookie(ID_TOKEN_COOKIE, idToken, cookieOpts(86400)); // 24h
+
+      if (refreshToken) {
+        reply.setCookie(REFRESH_TOKEN_COOKIE, refreshToken, cookieOpts(7 * 86400)); // 7d
+      }
+
+      reply.redirect(postLoginRedirect);
+    } catch (error) {
+      reply.redirect(`${opts.frontendUrl}/auth/error?reason=callback_failed`);
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // GET /auth/me — Return current user from session
+  // ------------------------------------------------------------------
+  app.get('/auth/me', async (request, reply) => {
+    const token = unsign(request, AUTH_TOKEN_COOKIE);
+    if (!token) {
+      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
+    }
+
+    const session = await verifySessionToken(token, sessionConfig);
+    if (!session) {
+      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } });
+    }
+
+    if (opts.getMe) {
+      const result = await opts.getMe(session);
+      return reply.send(result);
+    }
+
+    reply.send({ user: { fortiumUserId: session.fortiumUserId, email: session.email } });
+  });
+
+  // ------------------------------------------------------------------
+  // POST /auth/refresh — Exchange refresh token for new tokens
+  // ------------------------------------------------------------------
+  app.post('/auth/refresh', async (request, reply) => {
+    const refreshTokenValue = unsign(request, REFRESH_TOKEN_COOKIE);
+    if (!refreshTokenValue) {
+      return reply.status(401).send({ error: { code: 'NO_REFRESH_TOKEN', message: 'No refresh token' } });
+    }
+
+    try {
+      const tokens = await client.refreshToken(refreshTokenValue);
+
+      if (tokens.idToken) {
+        const claims = await client.validateIdToken(tokens.idToken);
+
+        // Rebuild session with authorize hook
+        let extraSessionData: Record<string, unknown> = {};
+        if (opts.authorize) {
+          extraSessionData = await opts.authorize(claims);
+        }
+
+        const sessionPayload: SessionPayload = {
+          fortiumUserId: claims.fortium_user_id,
+          email: claims.email,
+          ...extraSessionData,
+        };
+        const sessionToken = await createSessionToken(sessionPayload, sessionConfig);
+
+        reply.setCookie(AUTH_TOKEN_COOKIE, sessionToken, cookieOpts(86400));
+        reply.setCookie(ID_TOKEN_COOKIE, tokens.idToken, cookieOpts(86400));
+      }
+
+      if (tokens.refreshToken) {
+        reply.setCookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, cookieOpts(7 * 86400));
+      }
+
+      reply.send({ success: true });
+    } catch {
+      // Clear all cookies on refresh failure
+      reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
+      reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
+      reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+      return reply.status(401).send({ error: { code: 'REFRESH_FAILED', message: 'Token refresh failed' } });
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // POST /auth/logout — Clear cookies, return Identity logout URL (for SPAs)
+  // ------------------------------------------------------------------
+  app.post('/auth/logout', async (request, reply) => {
+    const idToken = unsign(request, ID_TOKEN_COOKIE);
+
+    reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+
+    const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
+    reply.send({ success: true, logoutUrl });
+  });
+
+  // ------------------------------------------------------------------
+  // GET /auth/logout — Clear cookies, redirect to Identity logout (for MPA/links)
+  // ------------------------------------------------------------------
+  app.get('/auth/logout', async (request, reply) => {
+    const idToken = unsign(request, ID_TOKEN_COOKIE);
+
+    reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+
+    const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
+    reply.redirect(logoutUrl);
+  });
+}
+
+export const identityPlugin = fp(identityPluginImpl, {
+  name: '@fortium/identity-client-fastify',
+  dependencies: ['@fastify/cookie'],
+});

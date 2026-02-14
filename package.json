@@ -1,0 +1,8 @@
+{
+  "name": "identity-client-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/core",
+    "packages/fastify"
+  ]
+}
