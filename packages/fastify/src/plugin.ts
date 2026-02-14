@@ -133,8 +133,17 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       }
 
       // Validate OIDC state from cookie
+      const rawCookie = request.cookies[OIDC_STATE_COOKIE];
+      app.log.info(
+        { hasCookie: !!rawCookie, cookieName: OIDC_STATE_COOKIE, allCookies: Object.keys(request.cookies) },
+        'OIDC callback: checking state cookie'
+      );
       const stateValue = unsign(request, OIDC_STATE_COOKIE);
       if (!stateValue) {
+        app.log.warn(
+          { rawCookiePresent: !!rawCookie, unsignResult: rawCookie ? 'invalid_signature' : 'no_cookie' },
+          'OIDC callback: state_missing'
+        );
         return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 

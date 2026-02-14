@@ -73,16 +73,19 @@ async function identityPluginImpl(app, opts) {
         try {
             const { code, state } = request.query;
             if (!code || !state) {
-                return reply.redirect(`${opts.frontendUrl}/auth/error?reason=invalid_callback`);
+                return reply.redirect(`${opts.frontendUrl}/login?error=invalid_callback`);
             }
             // Validate OIDC state from cookie
+            const rawCookie = request.cookies[OIDC_STATE_COOKIE];
+            app.log.info({ hasCookie: !!rawCookie, cookieName: OIDC_STATE_COOKIE, allCookies: Object.keys(request.cookies) }, 'OIDC callback: checking state cookie');
             const stateValue = unsign(request, OIDC_STATE_COOKIE);
             if (!stateValue) {
-                return reply.redirect(`${opts.frontendUrl}/auth/error?reason=state_missing`);
+                app.log.warn({ rawCookiePresent: !!rawCookie, unsignResult: rawCookie ? 'invalid_signature' : 'no_cookie' }, 'OIDC callback: state_missing');
+                return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
             }
             const oidcState = JSON.parse(stateValue);
             if (state !== oidcState.state) {
-                return reply.redirect(`${opts.frontendUrl}/auth/error?reason=state_mismatch`);
+                return reply.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
             }
             reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
             // Exchange code for tokens
@@ -95,7 +98,7 @@ async function identityPluginImpl(app, opts) {
                 }
                 catch (authError) {
                     const reason = authError instanceof Error ? authError.message : 'not_authorized';
-                    return reply.redirect(`${opts.frontendUrl}/auth/error?reason=${encodeURIComponent(reason)}`);
+                    return reply.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}`);
                 }
             }
             // Create session JWT
@@ -114,7 +117,7 @@ async function identityPluginImpl(app, opts) {
             reply.redirect(postLoginRedirect);
         }
         catch (error) {
-            reply.redirect(`${opts.frontendUrl}/auth/error?reason=callback_failed`);
+            reply.redirect(`${opts.frontendUrl}/login?error=callback_failed`);
         }
     });
     // ------------------------------------------------------------------
