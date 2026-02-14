@@ -129,18 +129,18 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       const { code, state } = request.query as { code?: string; state?: string };
 
       if (!code || !state) {
-        return reply.redirect(`${opts.frontendUrl}/auth/error?reason=invalid_callback`);
+        return reply.redirect(`${opts.frontendUrl}/login?error=invalid_callback`);
       }
 
       // Validate OIDC state from cookie
       const stateValue = unsign(request, OIDC_STATE_COOKIE);
       if (!stateValue) {
-        return reply.redirect(`${opts.frontendUrl}/auth/error?reason=state_missing`);
+        return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 
       const oidcState: OIDCState = JSON.parse(stateValue);
       if (state !== oidcState.state) {
-        return reply.redirect(`${opts.frontendUrl}/auth/error?reason=state_mismatch`);
+        return reply.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
       }
 
       reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
@@ -155,7 +155,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
           extraSessionData = await opts.authorize(claims);
         } catch (authError) {
           const reason = authError instanceof Error ? authError.message : 'not_authorized';
-          return reply.redirect(`${opts.frontendUrl}/auth/error?reason=${encodeURIComponent(reason)}`);
+          return reply.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}`);
         }
       }
 
@@ -177,7 +177,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
 
       reply.redirect(postLoginRedirect);
     } catch (error) {
-      reply.redirect(`${opts.frontendUrl}/auth/error?reason=callback_failed`);
+      reply.redirect(`${opts.frontendUrl}/login?error=callback_failed`);
     }
   });
 
