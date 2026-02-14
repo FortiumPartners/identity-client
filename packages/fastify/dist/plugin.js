@@ -117,6 +117,7 @@ async function identityPluginImpl(app, opts) {
             reply.redirect(postLoginRedirect);
         }
         catch (error) {
+            app.log.error({ err: error, message: error instanceof Error ? error.message : String(error) }, 'OIDC callback failed');
             reply.redirect(`${opts.frontendUrl}/login?error=callback_failed`);
         }
     });
