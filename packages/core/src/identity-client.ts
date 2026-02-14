@@ -5,8 +5,12 @@
  * Framework-agnostic — used directly or via the Fastify plugin.
  */
 
+import { webcrypto } from 'node:crypto';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { FortiumClaims, OIDCState, TokenResponse, TokenResult, RefreshResult } from './types.js';
+
+// Node 18 doesn't expose crypto as a global in ESM
+const cryptoImpl = globalThis.crypto ?? webcrypto;
 
 const OIDC_ENDPOINTS = {
   authorization: '/oidc/auth',
@@ -55,16 +59,16 @@ export class IdentityClient {
     const stateBytes = new Uint8Array(32);
     const nonceBytes = new Uint8Array(32);
     const verifierBytes = new Uint8Array(32);
-    crypto.getRandomValues(stateBytes);
-    crypto.getRandomValues(nonceBytes);
-    crypto.getRandomValues(verifierBytes);
+    cryptoImpl.getRandomValues(stateBytes);
+    cryptoImpl.getRandomValues(nonceBytes);
+    cryptoImpl.getRandomValues(verifierBytes);
 
     const state = base64URLEncode(stateBytes);
     const nonce = base64URLEncode(nonceBytes);
     const codeVerifier = base64URLEncode(verifierBytes);
 
     const encoder = new TextEncoder();
-    const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(codeVerifier));
+    const hashBuffer = await cryptoImpl.subtle.digest('SHA-256', encoder.encode(codeVerifier));
     const codeChallenge = base64URLEncode(new Uint8Array(hashBuffer));
 
     const params = new URLSearchParams({
