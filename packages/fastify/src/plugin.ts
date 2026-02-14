@@ -114,7 +114,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // ------------------------------------------------------------------
   // GET /auth/login — Redirect to Identity for OIDC authentication
   // ------------------------------------------------------------------
-  app.get('/auth/login', async (_request, reply) => {
+  app.get('/login', async (_request, reply) => {
     const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
 
     reply.setCookie(OIDC_STATE_COOKIE, JSON.stringify(state), cookieOpts(600));
@@ -124,7 +124,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // ------------------------------------------------------------------
   // GET /auth/callback — Handle OIDC callback, exchange code, set cookies
   // ------------------------------------------------------------------
-  app.get('/auth/callback', async (request, reply) => {
+  app.get('/callback', async (request, reply) => {
     try {
       const { code, state } = request.query as { code?: string; state?: string };
 
@@ -184,7 +184,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // ------------------------------------------------------------------
   // GET /auth/me — Return current user from session
   // ------------------------------------------------------------------
-  app.get('/auth/me', async (request, reply) => {
+  app.get('/me', async (request, reply) => {
     const token = unsign(request, AUTH_TOKEN_COOKIE);
     if (!token) {
       return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
@@ -206,7 +206,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // ------------------------------------------------------------------
   // POST /auth/refresh — Exchange refresh token for new tokens
   // ------------------------------------------------------------------
-  app.post('/auth/refresh', async (request, reply) => {
+  app.post('/refresh', async (request, reply) => {
     const refreshTokenValue = unsign(request, REFRESH_TOKEN_COOKIE);
     if (!refreshTokenValue) {
       return reply.status(401).send({ error: { code: 'NO_REFRESH_TOKEN', message: 'No refresh token' } });
@@ -252,7 +252,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // ------------------------------------------------------------------
   // POST /auth/logout — Clear cookies, return Identity logout URL (for SPAs)
   // ------------------------------------------------------------------
-  app.post('/auth/logout', async (request, reply) => {
+  app.post('/logout', async (request, reply) => {
     const idToken = unsign(request, ID_TOKEN_COOKIE);
 
     reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
@@ -266,7 +266,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // ------------------------------------------------------------------
   // GET /auth/logout — Clear cookies, redirect to Identity logout (for MPA/links)
   // ------------------------------------------------------------------
-  app.get('/auth/logout', async (request, reply) => {
+  app.get('/logout', async (request, reply) => {
     const idToken = unsign(request, ID_TOKEN_COOKIE);
 
     reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
