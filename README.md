@@ -3,21 +3,20 @@
 Shared OIDC client for Fortium Identity. Two packages:
 
 - **`@fortium/identity-client`** — Core OIDC mechanics (framework-agnostic)
-- **`@fortium/identity-client-fastify`** — Fastify plugin with auth routes + cookies
+- **`@fortium/identity-client/fastify`** — Fastify plugin with auth routes + cookies
 
 ## Installation (in consuming apps)
 
 ```json
 {
-  "@fortium/identity-client": "github:FortiumPartners/identity-client#main&path=packages/core",
-  "@fortium/identity-client-fastify": "github:FortiumPartners/identity-client#main&path=packages/fastify"
+  "@fortium/identity-client": "github:FortiumPartners/identity-client"
 }
 ```
 
 ## Fastify Plugin Usage
 
 ```typescript
-import { identityPlugin } from '@fortium/identity-client-fastify';
+import { identityPlugin } from '@fortium/identity-client/fastify';
 
 await app.register(identityPlugin, {
   issuer: config.IDENTITY_ISSUER,
@@ -54,7 +53,7 @@ await app.register(identityPlugin, {
 ### requireAuth middleware
 
 ```typescript
-import { requireAuth } from '@fortium/identity-client-fastify';
+import { requireAuth } from '@fortium/identity-client/fastify';
 
 const auth = requireAuth({ jwtSecret: config.JWT_SECRET, issuer: 'my-app' });
 
