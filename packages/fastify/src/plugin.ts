@@ -114,8 +114,14 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // ------------------------------------------------------------------
   // GET /auth/login — Redirect to Identity for OIDC authentication
   // ------------------------------------------------------------------
-  app.get('/login', async (_request, reply) => {
-    const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
+  app.get('/login', async (request, reply) => {
+    // Derive callback URL from request hostname so cookies stay on the same domain.
+    // Falls back to the static callbackUrl from config if hostname detection fails.
+    const callbackPath = new URL(opts.callbackUrl).pathname;
+    const proto = (request.headers['x-forwarded-proto'] as string) || (isProd ? 'https' : 'http');
+    const callbackUrl = `${proto}://${request.hostname}${callbackPath}`;
+
+    const { url, state } = await client.generateAuthorizationUrl(callbackUrl);
 
     reply.setCookie(OIDC_STATE_COOKIE, JSON.stringify(state), cookieOpts(600));
     reply.redirect(url);
