@@ -1,0 +1,35 @@
+{
+  "name": "@fortium/identity-client-express",
+  "version": "1.0.0",
+  "description": "Express plugin for Fortium Identity OIDC authentication",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "@fortium/identity-client": "^1.0.0"
+  },
+  "peerDependencies": {
+    "express": ">=4.0.0"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.7",
+    "@types/express": "^5.0.0",
+    "@types/node": "^25.2.3",
+    "express": "^4.21.0",
+    "typescript": "^5.7.0"
+  }
+}

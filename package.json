@@ -11,19 +11,25 @@
     "./fastify": {
       "types": "./packages/fastify/dist/index.d.ts",
       "import": "./packages/fastify/dist/index.js"
+    },
+    "./express": {
+      "types": "./packages/express/dist/index.d.ts",
+      "import": "./packages/express/dist/index.js"
     }
   },
   "scripts": {
-    "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/fastify",
+    "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/fastify && npm run build --workspace=packages/express",
     "prepare": "npm run build"
   },
   "workspaces": [
     "packages/core",
-    "packages/fastify"
+    "packages/fastify",
+    "packages/express"
   ],
   "dependencies": {
     "jose": "^5.9.6",
     "@fastify/cookie": ">=9.0.0",
-    "fastify-plugin": "^5.1.0"
+    "fastify-plugin": "^5.1.0",
+    "cookie-parser": "^1.4.6"
   }
 }
