@@ -68,8 +68,17 @@ async function identityPluginImpl(app, opts) {
         const proto = request.headers['x-forwarded-proto'] || (isProd ? 'https' : 'http');
         const callbackUrl = `${proto}://${request.hostname}${callbackPath}`;
         const { url, state } = await client.generateAuthorizationUrl(callbackUrl);
+        // Append optional OIDC prompt parameter if provided and valid
+        const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
+        const promptParam = request.query.prompt;
+        let redirectUrl = url;
+        if (promptParam && ALLOWED_PROMPTS.includes(promptParam)) {
+            const parsed = new URL(url);
+            parsed.searchParams.set('prompt', promptParam);
+            redirectUrl = parsed.toString();
+        }
         reply.setCookie(OIDC_STATE_COOKIE, JSON.stringify(state), cookieOpts(600));
-        reply.redirect(url);
+        reply.redirect(redirectUrl);
     });
     // ------------------------------------------------------------------
     // GET /auth/callback — Handle OIDC callback, exchange code, set cookies

@@ -123,8 +123,18 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
 
     const { url, state } = await client.generateAuthorizationUrl(callbackUrl);
 
+    // Append optional OIDC prompt parameter if provided and valid
+    const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
+    const promptParam = (request.query as Record<string, string>).prompt;
+    let redirectUrl = url;
+    if (promptParam && ALLOWED_PROMPTS.includes(promptParam)) {
+      const parsed = new URL(url);
+      parsed.searchParams.set('prompt', promptParam);
+      redirectUrl = parsed.toString();
+    }
+
     reply.setCookie(OIDC_STATE_COOKIE, JSON.stringify(state), cookieOpts(600));
-    reply.redirect(url);
+    reply.redirect(redirectUrl);
   });
 
   // ------------------------------------------------------------------

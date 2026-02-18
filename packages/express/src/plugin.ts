@@ -127,8 +127,18 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
 
       const { url, state } = await client.generateAuthorizationUrl(callbackUrl);
 
+      // Append optional OIDC prompt parameter if provided and valid
+      const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
+      const promptParam = req.query.prompt as string | undefined;
+      let redirectUrl = url;
+      if (promptParam && ALLOWED_PROMPTS.includes(promptParam)) {
+        const parsed = new URL(url);
+        parsed.searchParams.set('prompt', promptParam);
+        redirectUrl = parsed.toString();
+      }
+
       res.cookie(OIDC_STATE_COOKIE, JSON.stringify(state), cookieOpts(600));
-      res.redirect(url);
+      res.redirect(redirectUrl);
     } catch (error) {
       console.error('Login redirect failed:', error);
       res.redirect(`${opts.frontendUrl}/login?error=login_failed`);
