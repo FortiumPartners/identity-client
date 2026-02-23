@@ -60,10 +60,9 @@ export function createIdentityRouter(opts) {
     // ------------------------------------------------------------------
     router.get('/login', async (req, res) => {
         try {
-            const callbackPath = new URL(opts.callbackUrl).pathname;
-            const proto = req.headers['x-forwarded-proto'] || (isProd ? 'https' : 'http');
-            const callbackUrl = `${proto}://${req.hostname}${callbackPath}`;
-            const { url, state } = await client.generateAuthorizationUrl(callbackUrl);
+            // Use the configured callbackUrl directly — deriving from req.hostname
+            // breaks behind reverse proxies (e.g., nginx → Render internal hostname).
+            const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
             // Append optional OIDC prompt parameter if provided and valid
             const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
             const promptParam = req.query.prompt;

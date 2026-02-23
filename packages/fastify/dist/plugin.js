@@ -62,12 +62,9 @@ async function identityPluginImpl(app, opts) {
     // GET /auth/login — Redirect to Identity for OIDC authentication
     // ------------------------------------------------------------------
     app.get('/login', async (request, reply) => {
-        // Derive callback URL from request hostname so cookies stay on the same domain.
-        // Falls back to the static callbackUrl from config if hostname detection fails.
-        const callbackPath = new URL(opts.callbackUrl).pathname;
-        const proto = request.headers['x-forwarded-proto'] || (isProd ? 'https' : 'http');
-        const callbackUrl = `${proto}://${request.hostname}${callbackPath}`;
-        const { url, state } = await client.generateAuthorizationUrl(callbackUrl);
+        // Use the configured callbackUrl directly — deriving from request.hostname
+        // breaks behind reverse proxies (e.g., nginx → Render internal hostname).
+        const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
         // Append optional OIDC prompt parameter if provided and valid
         const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
         const promptParam = request.query.prompt;
