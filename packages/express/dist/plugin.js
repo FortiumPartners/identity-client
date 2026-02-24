@@ -111,7 +111,8 @@ export function createIdentityRouter(opts) {
                 }
                 catch (authError) {
                     const reason = authError instanceof Error ? authError.message : 'not_authorized';
-                    return res.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}`);
+                    const emailParam = claims.email ? `&email=${encodeURIComponent(claims.email)}` : '';
+                    return res.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}${emailParam}`);
                 }
             }
             // Create session JWT

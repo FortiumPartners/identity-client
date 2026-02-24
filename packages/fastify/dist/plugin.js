@@ -109,7 +109,8 @@ async function identityPluginImpl(app, opts) {
                 }
                 catch (authError) {
                     const reason = authError instanceof Error ? authError.message : 'not_authorized';
-                    return reply.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}`);
+                    const emailParam = claims.email ? `&email=${encodeURIComponent(claims.email)}` : '';
+                    return reply.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}${emailParam}`);
                 }
             }
             // Create session JWT

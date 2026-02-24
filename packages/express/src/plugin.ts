@@ -179,7 +179,8 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
           extraSessionData = await opts.authorize(claims);
         } catch (authError) {
           const reason = authError instanceof Error ? authError.message : 'not_authorized';
-          return res.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}`);
+          const emailParam = claims.email ? `&email=${encodeURIComponent(claims.email)}` : '';
+          return res.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}${emailParam}`);
         }
       }
 
