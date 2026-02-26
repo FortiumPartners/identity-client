@@ -325,5 +325,22 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
     res.redirect(logoutUrl);
   });
 
+  // ------------------------------------------------------------------
+  // GET /switch-account — Clear cookies, destroy Identity session,
+  // redirect back to app login with fresh account picker
+  // ------------------------------------------------------------------
+  router.get('/switch-account', (_req: Request, res: Response) => {
+    res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
+    res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
+    res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+    res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+
+    const identityBase = opts.issuer.replace(/\/oidc$/, '');
+    const returnTo = `${opts.frontendUrl}/login?switch=1`;
+    res.redirect(
+      `${identityBase}/auth/signout-and-retry?client_id=${encodeURIComponent(opts.clientId)}&return_to=${encodeURIComponent(returnTo)}`,
+    );
+  });
+
   return router;
 }

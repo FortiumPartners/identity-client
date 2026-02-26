@@ -299,6 +299,23 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
     reply.redirect(logoutUrl);
   });
+
+  // ------------------------------------------------------------------
+  // GET /auth/switch-account — Clear cookies, destroy Identity session,
+  // redirect back to app login with fresh account picker
+  // ------------------------------------------------------------------
+  app.get('/switch-account', async (_request, reply) => {
+    reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+
+    const identityBase = opts.issuer.replace(/\/oidc$/, '');
+    const returnTo = `${opts.frontendUrl}/login?switch=1`;
+    reply.redirect(
+      `${identityBase}/auth/signout-and-retry?client_id=${encodeURIComponent(opts.clientId)}&return_to=${encodeURIComponent(returnTo)}`,
+    );
+  });
 }
 
 export const identityPlugin = fp(identityPluginImpl, {
