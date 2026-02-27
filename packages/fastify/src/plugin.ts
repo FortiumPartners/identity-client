@@ -15,8 +15,9 @@ import {
   IdentityClient,
   createSessionToken,
   verifySessionToken,
+  verifyM2MToken,
 } from '@fortium/identity-client';
-import type { FortiumClaims, OIDCState, SessionPayload } from '@fortium/identity-client';
+import type { FortiumClaims, OIDCState, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
 
 export interface IdentityPluginOptions {
   /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com) */
@@ -322,3 +323,28 @@ export const identityPlugin = fp(identityPluginImpl, {
   name: '@fortium/identity-client-fastify',
   dependencies: ['@fastify/cookie'],
 });
+
+// M2M type augmentation
+declare module 'fastify' {
+  interface FastifyRequest {
+    m2m?: M2MTokenPayload;
+  }
+}
+
+/**
+ * Creates a Fastify preHandler that validates Identity-issued M2M (client_credentials) JWTs.
+ * Use on API routes that accept system-to-system Bearer tokens.
+ */
+export function createM2MAuth(opts: M2MAuthOptions) {
+  return async function m2mAuth(request: FastifyRequest, reply: FastifyReply) {
+    const auth = request.headers.authorization;
+    if (!auth?.startsWith('Bearer ')) {
+      return reply.status(401).send({ error: 'Bearer token required' });
+    }
+    try {
+      request.m2m = await verifyM2MToken(auth.slice(7), opts);
+    } catch {
+      return reply.status(401).send({ error: 'Invalid token' });
+    }
+  };
+}

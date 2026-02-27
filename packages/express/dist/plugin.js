@@ -8,7 +8,7 @@
  * reimplementing the OIDC flow.
  */
 import { Router } from 'express';
-import { IdentityClient, createSessionToken, verifySessionToken, } from '@fortium/identity-client';
+import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, } from '@fortium/identity-client';
 // Cookie name helpers
 function cookieName(prefix, name) {
     return prefix ? `${prefix}_${name}` : name;
@@ -242,4 +242,23 @@ export function createIdentityRouter(opts) {
         res.redirect(`${identityBase}/auth/signout-and-retry?client_id=${encodeURIComponent(opts.clientId)}&return_to=${encodeURIComponent(returnTo)}`);
     });
     return router;
+}
+/**
+ * Creates Express middleware that validates Identity-issued M2M (client_credentials) JWTs.
+ * Use on API routes that accept system-to-system Bearer tokens.
+ */
+export function createM2MAuth(opts) {
+    return async function m2mAuth(req, res, next) {
+        const auth = req.headers.authorization;
+        if (!auth?.startsWith('Bearer ')) {
+            return res.status(401).json({ error: 'Bearer token required' });
+        }
+        try {
+            req.m2m = await verifyM2MToken(auth.slice(7), opts);
+            next();
+        }
+        catch {
+            return res.status(401).json({ error: 'Invalid token' });
+        }
+    };
 }

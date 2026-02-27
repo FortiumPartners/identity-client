@@ -9,13 +9,14 @@
  */
 
 import { Router } from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import {
   IdentityClient,
   createSessionToken,
   verifySessionToken,
+  verifyM2MToken,
 } from '@fortium/identity-client';
-import type { FortiumClaims, OIDCState, SessionPayload } from '@fortium/identity-client';
+import type { FortiumClaims, OIDCState, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
 
 export interface IdentityPluginOptions {
   /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com) */
@@ -343,4 +344,32 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
   });
 
   return router;
+}
+
+// M2M type augmentation
+declare global {
+  namespace Express {
+    interface Request {
+      m2m?: M2MTokenPayload;
+    }
+  }
+}
+
+/**
+ * Creates Express middleware that validates Identity-issued M2M (client_credentials) JWTs.
+ * Use on API routes that accept system-to-system Bearer tokens.
+ */
+export function createM2MAuth(opts: M2MAuthOptions) {
+  return async function m2mAuth(req: Request, res: Response, next: NextFunction) {
+    const auth = req.headers.authorization;
+    if (!auth?.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Bearer token required' });
+    }
+    try {
+      req.m2m = await verifyM2MToken(auth.slice(7), opts);
+      next();
+    } catch {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+  };
 }

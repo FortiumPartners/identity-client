@@ -9,7 +9,7 @@
  */
 import fp from 'fastify-plugin';
 import '@fastify/cookie'; // Type augmentations for cookies
-import { IdentityClient, createSessionToken, verifySessionToken, } from '@fortium/identity-client';
+import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, } from '@fortium/identity-client';
 // Cookie name helpers
 function cookieName(prefix, name) {
     return prefix ? `${prefix}_${name}` : name;
@@ -230,3 +230,21 @@ export const identityPlugin = fp(identityPluginImpl, {
     name: '@fortium/identity-client-fastify',
     dependencies: ['@fastify/cookie'],
 });
+/**
+ * Creates a Fastify preHandler that validates Identity-issued M2M (client_credentials) JWTs.
+ * Use on API routes that accept system-to-system Bearer tokens.
+ */
+export function createM2MAuth(opts) {
+    return async function m2mAuth(request, reply) {
+        const auth = request.headers.authorization;
+        if (!auth?.startsWith('Bearer ')) {
+            return reply.status(401).send({ error: 'Bearer token required' });
+        }
+        try {
+            request.m2m = await verifyM2MToken(auth.slice(7), opts);
+        }
+        catch {
+            return reply.status(401).send({ error: 'Invalid token' });
+        }
+    };
+}

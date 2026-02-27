@@ -19,6 +19,7 @@
   },
   "scripts": {
     "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/fastify && npm run build --workspace=packages/express",
+    "test": "NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.js",
     "prepare": "npm run build"
   },
   "workspaces": [
@@ -27,12 +28,15 @@
     "packages/express"
   ],
   "dependencies": {
-    "jose": "^5.9.6",
     "@fastify/cookie": ">=9.0.0",
+    "cookie-parser": "^1.4.6",
     "fastify-plugin": "^5.1.0",
-    "cookie-parser": "^1.4.6"
+    "jose": "^5.9.6"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
     "typescript": "^5.7.0"
   }
 }

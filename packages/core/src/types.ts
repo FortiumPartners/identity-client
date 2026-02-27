@@ -71,3 +71,27 @@ export interface SessionPayload {
   email: string;
   [key: string]: unknown;
 }
+
+/**
+ * Decoded payload from an Identity-issued M2M (client_credentials) JWT.
+ */
+export interface M2MTokenPayload extends JWTPayload {
+  sub: string;
+  fortium_user_id?: string;
+  user_type?: string;
+  owner_id?: string;
+  apps?: Array<{ app_id: string; permissions: string[] }>;
+  orgs?: Array<{ org_id: string; name: string; role: string }>;
+}
+
+/**
+ * Options for M2M token verification middleware.
+ */
+export interface M2MAuthOptions {
+  /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com/oidc) */
+  issuer: string;
+  /** Expected audience claim (usually the app's client_id) */
+  audience?: string;
+  /** Required scopes — rejects tokens missing any of these */
+  requiredScopes?: string[];
+}

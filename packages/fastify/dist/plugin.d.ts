@@ -7,9 +7,9 @@
  * Apps customize behavior via hooks (authorize, getMe) — not by
  * reimplementing the OIDC flow.
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import '@fastify/cookie';
-import type { FortiumClaims, SessionPayload } from '@fortium/identity-client';
+import type { FortiumClaims, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
 export interface IdentityPluginOptions {
     /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com) */
     issuer: string;
@@ -47,4 +47,14 @@ export interface IdentityPluginOptions {
 }
 declare function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOptions): Promise<void>;
 export declare const identityPlugin: typeof identityPluginImpl;
+declare module 'fastify' {
+    interface FastifyRequest {
+        m2m?: M2MTokenPayload;
+    }
+}
+/**
+ * Creates a Fastify preHandler that validates Identity-issued M2M (client_credentials) JWTs.
+ * Use on API routes that accept system-to-system Bearer tokens.
+ */
+export declare function createM2MAuth(opts: M2MAuthOptions): (request: FastifyRequest, reply: FastifyReply) => Promise<undefined>;
 export {};

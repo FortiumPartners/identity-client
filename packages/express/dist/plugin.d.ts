@@ -8,7 +8,8 @@
  * reimplementing the OIDC flow.
  */
 import { Router } from 'express';
-import type { FortiumClaims, SessionPayload } from '@fortium/identity-client';
+import type { Request, Response, NextFunction } from 'express';
+import type { FortiumClaims, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
 export interface IdentityPluginOptions {
     /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com) */
     issuer: string;
@@ -58,3 +59,15 @@ export interface IdentityPluginOptions {
     }>;
 }
 export declare function createIdentityRouter(opts: IdentityPluginOptions): Router;
+declare global {
+    namespace Express {
+        interface Request {
+            m2m?: M2MTokenPayload;
+        }
+    }
+}
+/**
+ * Creates Express middleware that validates Identity-issued M2M (client_credentials) JWTs.
+ * Use on API routes that accept system-to-system Bearer tokens.
+ */
+export declare function createM2MAuth(opts: M2MAuthOptions): (req: Request, res: Response, next: NextFunction) => Promise<Response<any, Record<string, any>> | undefined>;
