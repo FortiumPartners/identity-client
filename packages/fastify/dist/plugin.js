@@ -92,10 +92,16 @@ async function identityPluginImpl(app, opts) {
             const stateValue = unsign(request, OIDC_STATE_COOKIE);
             if (!stateValue) {
                 app.log.warn({ rawCookiePresent: !!rawCookie, unsignResult: rawCookie ? 'invalid_signature' : 'no_cookie' }, 'OIDC callback: state_missing');
+                // Clear all auth cookies so the next login attempt starts clean (prevents loop)
+                reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+                reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
+                reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
+                reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
                 return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
             }
             const oidcState = JSON.parse(stateValue);
             if (state !== oidcState.state) {
+                reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
                 return reply.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
             }
             reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });

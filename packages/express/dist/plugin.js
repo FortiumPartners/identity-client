@@ -93,10 +93,16 @@ export function createIdentityRouter(opts) {
             const stateValue = readSignedCookie(req, OIDC_STATE_COOKIE);
             if (!stateValue) {
                 console.warn('OIDC callback: state cookie missing or invalid');
+                // Clear all auth cookies so the next login attempt starts clean (prevents loop)
+                res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+                res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
+                res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
+                res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
                 return res.redirect(`${opts.frontendUrl}/login?error=state_missing`);
             }
             const oidcState = JSON.parse(stateValue);
             if (state !== oidcState.state) {
+                res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
                 return res.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
             }
             res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
