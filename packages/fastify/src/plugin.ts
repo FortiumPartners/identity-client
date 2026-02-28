@@ -42,6 +42,8 @@ export interface IdentityPluginOptions {
   postLoginPath?: string;
   /** Where Identity redirects after logout (default: frontendUrl + '/login') */
   postLogoutPath?: string;
+  /** Cookie domain for cross-subdomain sharing (e.g., '.lxp.fortiumsoftware.com') */
+  cookieDomain?: string;
 
   /**
    * Called after Identity authenticates the user.
@@ -93,7 +95,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
 
   // Helper: standard cookie options
   function cookieOpts(maxAge: number) {
-    return {
+    const base: Record<string, unknown> = {
       httpOnly: true,
       secure: isProd,
       sameSite: 'lax' as const,
@@ -101,7 +103,16 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       path: '/',
       signed: true,
     };
+    if (opts.cookieDomain) {
+      base.domain = opts.cookieDomain;
+    }
+    return base;
   }
+
+  // Helper: options for clearCookie (must include domain to clear cross-subdomain cookies)
+  const clearOpts = opts.cookieDomain
+    ? { path: '/', domain: opts.cookieDomain }
+    : { path: '/' };
 
   // Helper: unsign a cookie, return value or null
   function unsign(request: FastifyRequest, name: string): string | null {
@@ -158,20 +169,20 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
           'OIDC callback: state_missing'
         );
         // Clear all auth cookies so the next login attempt starts clean (prevents loop)
-        reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
-        reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+        reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+        reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 
       const oidcState: OIDCState = JSON.parse(stateValue);
       if (state !== oidcState.state) {
-        reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+        reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
         return reply.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
       }
 
-      reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+      reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
 
       // Exchange code for tokens
       const { idToken, refreshToken, claims } = await client.exchangeCode(code, oidcState);
@@ -272,9 +283,9 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       reply.send({ success: true });
     } catch {
       // Clear all cookies on refresh failure
-      reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-      reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-      reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+      reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+      reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+      reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
       return reply.status(401).send({ error: { code: 'REFRESH_FAILED', message: 'Token refresh failed' } });
     }
   });
@@ -285,9 +296,9 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   app.post('/logout', async (request, reply) => {
     const idToken = unsign(request, ID_TOKEN_COOKIE);
 
-    reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-    reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-    reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
 
     const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
     reply.send({ success: true, logoutUrl });
@@ -299,9 +310,9 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   app.get('/logout', async (request, reply) => {
     const idToken = unsign(request, ID_TOKEN_COOKIE);
 
-    reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-    reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-    reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
 
     const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
     reply.redirect(logoutUrl);
@@ -312,10 +323,10 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // redirect back to app login with fresh account picker
   // ------------------------------------------------------------------
   app.get('/switch-account', async (_request, reply) => {
-    reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-    reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-    reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
-    reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+    reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
 
     const identityBase = opts.issuer.replace(/\/oidc$/, '');
     const returnTo = `${opts.frontendUrl}/login?switch=1`;

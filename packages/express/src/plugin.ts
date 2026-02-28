@@ -41,6 +41,8 @@ export interface IdentityPluginOptions {
   postLoginPath?: string;
   /** Where Identity redirects after logout (default: frontendUrl + '/login') */
   postLogoutPath?: string;
+  /** Cookie domain for cross-subdomain sharing (e.g., '.lxp.fortiumsoftware.com') */
+  cookieDomain?: string;
 
   /**
    * Called after Identity authenticates the user.
@@ -100,7 +102,7 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
 
   // Helper: standard cookie options
   function cookieOpts(maxAge: number) {
-    return {
+    const base: Record<string, unknown> = {
       httpOnly: true,
       secure: isProd,
       sameSite: 'lax' as const,
@@ -108,7 +110,16 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
       path: '/',
       signed: true,
     };
+    if (opts.cookieDomain) {
+      base.domain = opts.cookieDomain;
+    }
+    return base;
   }
+
+  // Helper: options for clearCookie (must include domain to clear cross-subdomain cookies)
+  const clearOpts = opts.cookieDomain
+    ? { path: '/', domain: opts.cookieDomain }
+    : { path: '/' };
 
   // Helper: read a signed cookie, return value or null
   function readSignedCookie(req: Request, name: string): string | null {
@@ -160,20 +171,20 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
       if (!stateValue) {
         console.warn('OIDC callback: state cookie missing or invalid');
         // Clear all auth cookies so the next login attempt starts clean (prevents loop)
-        res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
-        res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+        res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+        res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         return res.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 
       const oidcState: OIDCState = JSON.parse(stateValue);
       if (state !== oidcState.state) {
-        res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+        res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
         return res.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
       }
 
-      res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+      res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
 
       // Exchange code for tokens
       const tokenResult = await client.exchangeCode(code, oidcState);
@@ -297,9 +308,9 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
       res.json({ success: true });
     } catch {
       // Clear all cookies on refresh failure
-      res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-      res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-      res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+      res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+      res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+      res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
       return res.status(401).json({ error: { code: 'REFRESH_FAILED', message: 'Token refresh failed' } });
     }
   });
@@ -310,9 +321,9 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
   router.post('/logout', (req: Request, res: Response) => {
     const idToken = readSignedCookie(req, ID_TOKEN_COOKIE);
 
-    res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-    res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-    res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+    res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+    res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+    res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
 
     const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
     res.json({ success: true, logoutUrl });
@@ -324,9 +335,9 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
   router.get('/logout', (req: Request, res: Response) => {
     const idToken = readSignedCookie(req, ID_TOKEN_COOKIE);
 
-    res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-    res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-    res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+    res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+    res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+    res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
 
     const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
     res.redirect(logoutUrl);
@@ -337,10 +348,10 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
   // redirect back to app login with fresh account picker
   // ------------------------------------------------------------------
   router.get('/switch-account', (_req: Request, res: Response) => {
-    res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-    res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-    res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
-    res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+    res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+    res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+    res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+    res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
 
     const identityBase = opts.issuer.replace(/\/oidc$/, '');
     const returnTo = `${opts.frontendUrl}/login?switch=1`;
