@@ -15,7 +15,7 @@ const OIDC_ENDPOINTS = {
     jwks: '/.well-known/jwks.json',
     endSession: '/oidc/session/end',
 };
-const ENFORCED_SCOPES = 'openid profile email fortium';
+const ENFORCED_SCOPES = 'openid profile email fortium offline_access';
 export class IdentityClient {
     issuer;
     clientId;

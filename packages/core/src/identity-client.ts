@@ -20,7 +20,7 @@ const OIDC_ENDPOINTS = {
   endSession: '/oidc/session/end',
 } as const;
 
-const ENFORCED_SCOPES = 'openid profile email fortium';
+const ENFORCED_SCOPES = 'openid profile email fortium offline_access';
 
 export interface IdentityClientConfig {
   issuer: string;
