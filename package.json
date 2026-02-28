@@ -6,15 +6,18 @@
   "exports": {
     ".": {
       "types": "./packages/core/dist/index.d.ts",
-      "import": "./packages/core/dist/index.js"
+      "import": "./packages/core/dist/index.js",
+      "default": "./packages/core/dist/index.js"
     },
     "./fastify": {
       "types": "./packages/fastify/dist/index.d.ts",
-      "import": "./packages/fastify/dist/index.js"
+      "import": "./packages/fastify/dist/index.js",
+      "default": "./packages/fastify/dist/index.js"
     },
     "./express": {
       "types": "./packages/express/dist/index.d.ts",
-      "import": "./packages/express/dist/index.js"
+      "import": "./packages/express/dist/index.js",
+      "default": "./packages/express/dist/index.js"
     }
   },
   "scripts": {
