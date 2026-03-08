@@ -20,6 +20,11 @@ export default {
         strict: true,
         skipLibCheck: true,
         lib: ['ES2022', 'DOM'],
+        baseUrl: '.',
+        paths: {
+          '@fortium/identity-client': ['./packages/core/src/index.ts'],
+          '@fortium/identity-client/admin': ['./packages/admin/src/index.ts'],
+        },
       },
     }],
   },

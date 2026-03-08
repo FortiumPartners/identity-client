@@ -10,6 +10,12 @@ import {
   RateLimitError,
 } from './errors.js';
 
+/**
+ * Internal HTTP client used by all resource sub-clients.
+ * Handles authentication, request building, and error mapping.
+ *
+ * Not intended for direct use -- access the API through {@link IdentityAdminClient} instead.
+ */
 export class HttpClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -121,22 +127,62 @@ export class HttpClient {
   }
 
   // Public convenience methods used by sub-clients
+
+  /**
+   * Send a GET request.
+   * @param path - API path (e.g., '/api/v1/users')
+   * @param params - Query parameters (undefined/null values are omitted)
+   * @returns Parsed JSON response body
+   * @throws {IdentityApiError} On 4xx/5xx responses
+   * @throws {IdentityNetworkError} On network failures
+   */
   get<T>(path: string, params?: Record<string, unknown>): Promise<T> {
     return this.request<T>('GET', path, { params });
   }
 
+  /**
+   * Send a POST request.
+   * @param path - API path
+   * @param body - Request body (serialized as JSON)
+   * @returns Parsed JSON response body
+   * @throws {IdentityApiError} On 4xx/5xx responses
+   * @throws {IdentityNetworkError} On network failures
+   */
   post<T>(path: string, body?: unknown): Promise<T> {
     return this.request<T>('POST', path, { body });
   }
 
+  /**
+   * Send a PATCH request.
+   * @param path - API path
+   * @param body - Request body (serialized as JSON)
+   * @returns Parsed JSON response body
+   * @throws {IdentityApiError} On 4xx/5xx responses
+   * @throws {IdentityNetworkError} On network failures
+   */
   patch<T>(path: string, body: unknown): Promise<T> {
     return this.request<T>('PATCH', path, { body });
   }
 
+  /**
+   * Send a PUT request.
+   * @param path - API path
+   * @param body - Request body (serialized as JSON)
+   * @returns Parsed JSON response body
+   * @throws {IdentityApiError} On 4xx/5xx responses
+   * @throws {IdentityNetworkError} On network failures
+   */
   put<T>(path: string, body: unknown): Promise<T> {
     return this.request<T>('PUT', path, { body });
   }
 
+  /**
+   * Send a DELETE request.
+   * @param path - API path
+   * @returns Parsed JSON response body (or undefined for 204 responses)
+   * @throws {IdentityApiError} On 4xx/5xx responses
+   * @throws {IdentityNetworkError} On network failures
+   */
   delete<T>(path: string): Promise<T> {
     return this.request<T>('DELETE', path);
   }

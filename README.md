@@ -5,6 +5,7 @@ Shared OIDC client for Fortium Identity. Three packages:
 - **`@fortium/identity-client`** — Core OIDC mechanics (framework-agnostic)
 - **`@fortium/identity-client/fastify`** — Fastify plugin with auth routes + cookies
 - **`@fortium/identity-client/express`** — Express plugin with auth routes + cookies
+- **`@fortium/identity-client/admin`** — Typed admin client for Identity REST API (`/api/v1/*`)
 
 ## Installation
 
@@ -190,5 +191,6 @@ npm run build    # Builds core, fastify, and express packages
 packages/
 ├── core/       — IdentityClient, session JWT utilities, types
 ├── fastify/    — Fastify plugin (identityPlugin, requireAuth)
-└── express/    — Express plugin (createIdentityRouter, requireAuth)
+├── express/    — Express plugin (createIdentityRouter, requireAuth)
+└── admin/      — Typed admin client for Identity REST management API
 ```
