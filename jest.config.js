@@ -7,6 +7,7 @@ export default {
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@fortium/identity-client$': '<rootDir>/packages/core/src/index.ts',
+    '^@fortium/identity-client/admin$': '<rootDir>/packages/admin/src/index.ts',
   },
   transform: {
     '^.+\\.ts$': ['ts-jest', {

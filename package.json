@@ -18,17 +18,23 @@
       "types": "./packages/express/dist/index.d.ts",
       "import": "./packages/express/dist/index.js",
       "default": "./packages/express/dist/index.js"
+    },
+    "./admin": {
+      "types": "./packages/admin/dist/index.d.ts",
+      "import": "./packages/admin/dist/index.js",
+      "default": "./packages/admin/dist/index.js"
     }
   },
   "scripts": {
-    "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/fastify && npm run build --workspace=packages/express",
+    "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/fastify && npm run build --workspace=packages/express && npm run build --workspace=packages/admin",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.js",
     "prepare": "npm run build"
   },
   "workspaces": [
     "packages/core",
     "packages/fastify",
-    "packages/express"
+    "packages/express",
+    "packages/admin"
   ],
   "dependencies": {
     "@fastify/cookie": ">=9.0.0",
