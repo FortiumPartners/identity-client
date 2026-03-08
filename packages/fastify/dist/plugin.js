@@ -39,7 +39,7 @@ async function identityPluginImpl(app, opts) {
         : `${opts.frontendUrl}/login`;
     // Helper: standard cookie options
     function cookieOpts(maxAge) {
-        return {
+        const base = {
             httpOnly: true,
             secure: isProd,
             sameSite: 'lax',
@@ -47,7 +47,15 @@ async function identityPluginImpl(app, opts) {
             path: '/',
             signed: true,
         };
+        if (opts.cookieDomain) {
+            base.domain = opts.cookieDomain;
+        }
+        return base;
     }
+    // Helper: options for clearCookie (must include domain to clear cross-subdomain cookies)
+    const clearOpts = opts.cookieDomain
+        ? { path: '/', domain: opts.cookieDomain }
+        : { path: '/' };
     // Helper: unsign a cookie, return value or null
     function unsign(request, name) {
         const raw = request.cookies[name];
@@ -93,18 +101,18 @@ async function identityPluginImpl(app, opts) {
             if (!stateValue) {
                 app.log.warn({ rawCookiePresent: !!rawCookie, unsignResult: rawCookie ? 'invalid_signature' : 'no_cookie' }, 'OIDC callback: state_missing');
                 // Clear all auth cookies so the next login attempt starts clean (prevents loop)
-                reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
-                reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-                reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-                reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+                reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+                reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+                reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+                reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
                 return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
             }
             const oidcState = JSON.parse(stateValue);
             if (state !== oidcState.state) {
-                reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+                reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
                 return reply.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
             }
-            reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+            reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
             // Exchange code for tokens
             const { idToken, refreshToken, claims } = await client.exchangeCode(code, oidcState);
             // Run authorize hook — apps check permissions, upsert records, etc.
@@ -190,9 +198,9 @@ async function identityPluginImpl(app, opts) {
         }
         catch {
             // Clear all cookies on refresh failure
-            reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-            reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-            reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+            reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+            reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+            reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
             return reply.status(401).send({ error: { code: 'REFRESH_FAILED', message: 'Token refresh failed' } });
         }
     });
@@ -201,9 +209,9 @@ async function identityPluginImpl(app, opts) {
     // ------------------------------------------------------------------
     app.post('/logout', async (request, reply) => {
         const idToken = unsign(request, ID_TOKEN_COOKIE);
-        reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+        reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
         reply.send({ success: true, logoutUrl });
     });
@@ -212,9 +220,9 @@ async function identityPluginImpl(app, opts) {
     // ------------------------------------------------------------------
     app.get('/logout', async (request, reply) => {
         const idToken = unsign(request, ID_TOKEN_COOKIE);
-        reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+        reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
         reply.redirect(logoutUrl);
     });
@@ -223,10 +231,10 @@ async function identityPluginImpl(app, opts) {
     // redirect back to app login with fresh account picker
     // ------------------------------------------------------------------
     app.get('/switch-account', async (_request, reply) => {
-        reply.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
-        reply.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+        reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
         const identityBase = opts.issuer.replace(/\/oidc$/, '');
         const returnTo = `${opts.frontendUrl}/login?switch=1`;
         reply.redirect(`${identityBase}/auth/signout-and-retry?client_id=${encodeURIComponent(opts.clientId)}&return_to=${encodeURIComponent(returnTo)}`);

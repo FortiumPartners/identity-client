@@ -33,6 +33,8 @@ export interface IdentityPluginOptions {
     postLoginPath?: string;
     /** Where Identity redirects after logout (default: frontendUrl + '/login') */
     postLogoutPath?: string;
+    /** Cookie domain for cross-subdomain sharing (e.g., '.lxp.fortiumsoftware.com') */
+    cookieDomain?: string;
     /**
      * Called after Identity authenticates the user.
      * Use to check authorization (e.g., admin allowlist) and return extra session data.

@@ -39,7 +39,7 @@ export function createIdentityRouter(opts) {
         : `${opts.frontendUrl}/login`;
     // Helper: standard cookie options
     function cookieOpts(maxAge) {
-        return {
+        const base = {
             httpOnly: true,
             secure: isProd,
             sameSite: 'lax',
@@ -47,7 +47,15 @@ export function createIdentityRouter(opts) {
             path: '/',
             signed: true,
         };
+        if (opts.cookieDomain) {
+            base.domain = opts.cookieDomain;
+        }
+        return base;
     }
+    // Helper: options for clearCookie (must include domain to clear cross-subdomain cookies)
+    const clearOpts = opts.cookieDomain
+        ? { path: '/', domain: opts.cookieDomain }
+        : { path: '/' };
     // Helper: read a signed cookie, return value or null
     function readSignedCookie(req, name) {
         const value = req.signedCookies?.[name];
@@ -94,18 +102,18 @@ export function createIdentityRouter(opts) {
             if (!stateValue) {
                 console.warn('OIDC callback: state cookie missing or invalid');
                 // Clear all auth cookies so the next login attempt starts clean (prevents loop)
-                res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
-                res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-                res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-                res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+                res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+                res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+                res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+                res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
                 return res.redirect(`${opts.frontendUrl}/login?error=state_missing`);
             }
             const oidcState = JSON.parse(stateValue);
             if (state !== oidcState.state) {
-                res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+                res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
                 return res.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
             }
-            res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+            res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
             // Exchange code for tokens
             const tokenResult = await client.exchangeCode(code, oidcState);
             const { idToken, refreshToken, claims } = tokenResult;
@@ -206,9 +214,9 @@ export function createIdentityRouter(opts) {
         }
         catch {
             // Clear all cookies on refresh failure
-            res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-            res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-            res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+            res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+            res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+            res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
             return res.status(401).json({ error: { code: 'REFRESH_FAILED', message: 'Token refresh failed' } });
         }
     });
@@ -217,9 +225,9 @@ export function createIdentityRouter(opts) {
     // ------------------------------------------------------------------
     router.post('/logout', (req, res) => {
         const idToken = readSignedCookie(req, ID_TOKEN_COOKIE);
-        res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+        res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
         res.json({ success: true, logoutUrl });
     });
@@ -228,9 +236,9 @@ export function createIdentityRouter(opts) {
     // ------------------------------------------------------------------
     router.get('/logout', (req, res) => {
         const idToken = readSignedCookie(req, ID_TOKEN_COOKIE);
-        res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
+        res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
         res.redirect(logoutUrl);
     });
@@ -239,10 +247,10 @@ export function createIdentityRouter(opts) {
     // redirect back to app login with fresh account picker
     // ------------------------------------------------------------------
     router.get('/switch-account', (_req, res) => {
-        res.clearCookie(AUTH_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(ID_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(REFRESH_TOKEN_COOKIE, { path: '/' });
-        res.clearCookie(OIDC_STATE_COOKIE, { path: '/' });
+        res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
         const identityBase = opts.issuer.replace(/\/oidc$/, '');
         const returnTo = `${opts.frontendUrl}/login?switch=1`;
         res.redirect(`${identityBase}/auth/signout-and-retry?client_id=${encodeURIComponent(opts.clientId)}&return_to=${encodeURIComponent(returnTo)}`);
