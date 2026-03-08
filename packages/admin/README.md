@@ -32,10 +32,13 @@ const admin = new IdentityAdminClient({
   apiKey: process.env.IDENTITY_API_KEY!,
 });
 
-// List users
-const { users, pagination } = await admin.users.list({ search: 'burke' });
+// List users entitled to YOUR app (not all Identity users)
+const { entitlements } = await admin.entitlements.list({ appId: 'my-app' });
 
-// Grant app access
+// Get details for a specific user
+const user = await admin.users.get(entitlements[0].userId);
+
+// Grant app access to a new user
 await admin.entitlements.grant({
   userId: 'usr_abc123',
   appId: 'my-app',
@@ -276,16 +279,42 @@ User clicks "Manage Users"
 App checks: does this user have admin role? (app's own DB)
     |
     v  (yes)
-App calls: admin.users.list()  (Identity API, authenticated with API key)
+App calls: admin.entitlements.list({ appId: 'my-app' })  ← scoped to YOUR app
     |
     v
-Identity returns user data
+Identity returns only users who have access to your app
     |
     v
-App renders admin UI
+App renders admin UI showing YOUR app's users
 ```
 
 The API key authenticates the **app** to Identity. The app is responsible for checking that the **logged-in user** has permission to perform admin operations before making these calls.
+
+### Critical: Scope to your own app
+
+**Your admin UI should only show users who have an entitlement to YOUR app -- not all Identity users.** Identity is a shared platform with users across many apps. Showing all users creates confusion and potential security/privacy issues.
+
+**DO** -- scope user views through entitlements:
+```typescript
+// List users who have access to YOUR app
+const entitled = admin.entitlements.listAll({ appId: 'talent' });
+for await (const ent of entitled) {
+  const user = await admin.users.get(ent.userId);
+  // Show this user in your admin UI
+}
+
+// Or grant access to a specific user for YOUR app
+await admin.entitlements.grant({ userId: 'usr_123', appId: 'talent' });
+```
+
+**DON'T** -- show all Identity users:
+```typescript
+// WRONG: This lists ALL users across ALL Fortium apps
+const { users } = await admin.users.list();
+// Your app should NOT display users who don't have your app's entitlement
+```
+
+The `admin.users` sub-client accesses the full Identity user directory. Use `admin.entitlements.list({ appId: 'your-app-id' })` to discover which users belong to your app, then fetch individual user details with `admin.users.get(userId)` as needed.
 
 ## Error Handling
 
