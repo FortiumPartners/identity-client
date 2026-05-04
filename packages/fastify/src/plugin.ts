@@ -44,6 +44,14 @@ export interface IdentityPluginOptions {
   postLogoutPath?: string;
   /** Cookie domain for cross-subdomain sharing (e.g., '.lxp.fortiumsoftware.com') */
   cookieDomain?: string;
+  /**
+   * SameSite attribute for auth cookies (default: 'lax').
+   * Set to 'none' when the frontend and API are on cross-site origins
+   * (e.g., separate onrender.com subdomains, which are cross-site because
+   * onrender.com is on the Public Suffix List). 'none' requires Secure,
+   * which the plugin already sets in production.
+   */
+  cookieSameSite?: 'lax' | 'strict' | 'none';
 
   /**
    * Called after Identity authenticates the user.
@@ -94,11 +102,15 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     : `${opts.frontendUrl}/login`;
 
   // Helper: standard cookie options
+  const sameSiteAttr = opts.cookieSameSite || 'lax';
+  // SameSite=None requires Secure per browser spec — force secure in that case
+  // even outside production (still gated by HTTPS on Render etc.).
+  const cookieSecure = isProd || sameSiteAttr === 'none';
   function cookieOpts(maxAge: number) {
     const base: Record<string, unknown> = {
       httpOnly: true,
-      secure: isProd,
-      sameSite: 'lax' as const,
+      secure: cookieSecure,
+      sameSite: sameSiteAttr,
       maxAge,
       path: '/',
       signed: true,

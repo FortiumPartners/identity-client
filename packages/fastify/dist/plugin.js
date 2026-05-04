@@ -38,11 +38,15 @@ async function identityPluginImpl(app, opts) {
         ? `${opts.frontendUrl}${opts.postLogoutPath}`
         : `${opts.frontendUrl}/login`;
     // Helper: standard cookie options
+    const sameSiteAttr = opts.cookieSameSite || 'lax';
+    // SameSite=None requires Secure per browser spec — force secure in that case
+    // even outside production (still gated by HTTPS on Render etc.).
+    const cookieSecure = isProd || sameSiteAttr === 'none';
     function cookieOpts(maxAge) {
         const base = {
             httpOnly: true,
-            secure: isProd,
-            sameSite: 'lax',
+            secure: cookieSecure,
+            sameSite: sameSiteAttr,
             maxAge,
             path: '/',
             signed: true,

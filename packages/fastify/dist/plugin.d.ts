@@ -36,6 +36,14 @@ export interface IdentityPluginOptions {
     /** Cookie domain for cross-subdomain sharing (e.g., '.lxp.fortiumsoftware.com') */
     cookieDomain?: string;
     /**
+     * SameSite attribute for auth cookies (default: 'lax').
+     * Set to 'none' when the frontend and API are on cross-site origins
+     * (e.g., separate onrender.com subdomains, which are cross-site because
+     * onrender.com is on the Public Suffix List). 'none' requires Secure,
+     * which the plugin already sets in production.
+     */
+    cookieSameSite?: 'lax' | 'strict' | 'none';
+    /**
      * Called after Identity authenticates the user.
      * Use to check authorization (e.g., admin allowlist) and return extra session data.
      * Throw to reject the login. Return extra fields to include in the session JWT.
