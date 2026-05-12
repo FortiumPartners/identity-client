@@ -316,6 +316,106 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
   });
 
   // ------------------------------------------------------------------
+  // GET /widget-token — Exchange user session for a narrow-audience JWT
+  // ------------------------------------------------------------------
+  // RFC 8693 Token Exchange consumer route. The user must be authenticated
+  // (signed session cookie). The app's OIDC client_id must be allowlisted
+  // on Identity for the requested `audience` (see Identity's migration 033
+  // + 034 + docs/WIDGET_TOKEN_EXCHANGE.md).
+  //
+  // Returns a short-lived JWT (5-minute TTL) the frontend can hand to a
+  // downstream service (e.g. the Ideas widget). The receiver validates
+  // signature via Identity's JWKS and asserts aud === <its own hostname>.
+  router.get('/widget-token', async (req: Request, res: Response) => {
+    const start = Date.now();
+    const audience = typeof req.query.audience === 'string' ? req.query.audience : undefined;
+
+    if (!audience) {
+      return res.status(400).json({
+        error: 'invalid_request',
+        error_description: 'audience query parameter is required',
+      });
+    }
+
+    // Session validation — same shape as /me
+    const sessionToken = readSignedCookie(req, AUTH_TOKEN_COOKIE);
+    if (!sessionToken) {
+      return res.status(401).json({
+        error: 'unauthorized',
+        error_description: 'authenticated session required',
+      });
+    }
+    const session = await verifySessionToken(sessionToken, sessionConfig);
+    if (!session) {
+      return res.status(401).json({
+        error: 'unauthorized',
+        error_description: 'invalid session',
+      });
+    }
+
+    try {
+      const tokenResponse = await client.requestWidgetToken(
+        session.fortiumUserId,
+        audience,
+      );
+      const duration = Date.now() - start;
+      console.log(
+        JSON.stringify({
+          level: 'info',
+          msg: 'widget-token exchange succeeded',
+          audience,
+          subjectUserId: session.fortiumUserId,
+          durationMs: duration,
+        }),
+      );
+      return res.json({
+        accessToken: tokenResponse.access_token,
+        expiresIn: tokenResponse.expires_in,
+        tokenType: tokenResponse.token_type,
+        audience,
+      });
+    } catch (err) {
+      const duration = Date.now() - start;
+      const oauthErr = err as Error & { statusCode?: number; oauthError?: string };
+
+      // Identity-returned 4xx — forward the OAuth error code verbatim
+      if (oauthErr.statusCode && oauthErr.statusCode >= 400 && oauthErr.statusCode < 500) {
+        console.log(
+          JSON.stringify({
+            level: 'warn',
+            msg: 'widget-token exchange refused by Identity',
+            audience,
+            subjectUserId: session.fortiumUserId,
+            durationMs: duration,
+            identityStatus: oauthErr.statusCode,
+            oauthError: oauthErr.oauthError,
+          }),
+        );
+        return res.status(oauthErr.statusCode).json({
+          error: oauthErr.oauthError || 'invalid_request',
+          error_description: oauthErr.message,
+        });
+      }
+
+      // Identity 5xx, network failure, or timeout → 503
+      console.log(
+        JSON.stringify({
+          level: 'error',
+          msg: 'widget-token exchange failed (Identity unreachable)',
+          audience,
+          subjectUserId: session.fortiumUserId,
+          durationMs: duration,
+          err: oauthErr.message,
+        }),
+      );
+      return res.status(503).json({
+        error: 'service_unavailable',
+        error_description: 'identity provider is unavailable',
+      });
+    }
+  });
+
+  // ------------------------------------------------------------------
   // POST /logout — Clear cookies, return Identity logout URL (for SPAs)
   // ------------------------------------------------------------------
   router.post('/logout', (req: Request, res: Response) => {

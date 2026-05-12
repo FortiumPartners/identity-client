@@ -129,6 +129,61 @@ export class IdentityClient {
         };
     }
     /**
+     * Request a narrow-audience access token via RFC 8693 token exchange.
+     *
+     * Used by the widget-token route to mint short-lived JWTs that downstream
+     * services (e.g. ideas-api) can validate locally via JWKS. The calling
+     * client must be allowlisted on Identity for the requested `audience`
+     * via `oidc_clients.allowed_exchange_audiences` (migration 033).
+     *
+     * Trust model: `subjectUserId` is the user's Fortium user_id from the
+     * authenticated session. The M2M client (this library, server-side)
+     * vouches that this user is authenticated; Identity verifies the user
+     * exists + is active but does NOT cryptographically verify caller
+     * ownership of the user. See M2M_TOKEN_AUDIENCE.md in Identity repo.
+     *
+     * @param subjectUserId - Fortium user_id from session
+     * @param audience - Requested audience (must be in client's allowlist)
+     * @param timeoutMs - Hard timeout (default 5000ms)
+     * @returns Token response from Identity (raw OAuth shape)
+     * @throws Error with `.statusCode` (number) and `.oauthError` (string) on
+     *   non-2xx response; or a generic Error on timeout/network failure.
+     */
+    async requestWidgetToken(subjectUserId, audience, timeoutMs = 5000) {
+        const tokenUrl = new URL(OIDC_ENDPOINTS.token, this.issuer);
+        const body = new URLSearchParams({
+            grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+            subject_token: subjectUserId,
+            subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+            audience,
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+        });
+        const response = await fetch(tokenUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+            signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!response.ok) {
+            let oauthError = 'invalid_request';
+            let errorDescription = `Token exchange failed: HTTP ${response.status}`;
+            try {
+                const errorBody = (await response.json());
+                oauthError = errorBody.error || oauthError;
+                errorDescription = errorBody.error_description || errorDescription;
+            }
+            catch {
+                // body wasn't JSON; keep defaults
+            }
+            const err = new Error(errorDescription);
+            err.statusCode = response.status;
+            err.oauthError = oauthError;
+            throw err;
+        }
+        return response.json();
+    }
+    /**
      * Validate ID token using JWKS. Checks issuer, audience, nonce, and fortium_user_id.
      */
     async validateIdToken(idToken, expectedNonce) {

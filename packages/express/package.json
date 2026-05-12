@@ -1,6 +1,6 @@
 {
   "name": "@fortium/identity-client-express",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Express plugin for Fortium Identity OIDC authentication",
   "type": "module",
   "main": "dist/index.js",
@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "cookie-parser": "^1.4.6",
-    "@fortium/identity-client": "^1.0.0"
+    "@fortium/identity-client": "^1.1.0"
   },
   "peerDependencies": {
     "express": ">=4.0.0"

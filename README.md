@@ -113,10 +113,24 @@ Both plugins register the same routes:
 | `/callback` | GET | Handle OIDC callback, set session cookies |
 | `/me` | GET | Return current user from session |
 | `/refresh` | POST | Exchange refresh token for new tokens |
+| `/widget-token` | GET | RFC 8693 token exchange — mint a narrow-audience JWT for a downstream service (since 1.1.0) |
 | `/logout` | POST | Clear cookies, return `{ logoutUrl }` |
 | `/logout` | GET | Clear cookies, redirect to Identity logout |
 
 Mount at `/auth` to get `/auth/login`, `/auth/callback`, etc.
+
+### `/widget-token` — RFC 8693 token exchange
+
+```http
+GET /auth/widget-token?audience=ideas-api
+Cookie: auth_token=<signed session>
+
+→ 200 { "accessToken": "<jwt>", "expiresIn": 300, "tokenType": "Bearer", "audience": "ideas-api" }
+```
+
+Requires Identity-side admin configuration on the calling app's `oidc_clients` row: `urn:ietf:params:oauth:grant-type:token-exchange` in `grant_types` AND the requested audience listed in `allowed_exchange_audiences`. See Identity repo's `docs/WIDGET_TOKEN_EXCHANGE.md` for the full contract.
+
+Errors are forwarded as OAuth-compliant JSON (`{ error, error_description }`): `400 invalid_target` if the audience isn't allowlisted, `401` if no/invalid session, `503 service_unavailable` if Identity is unreachable.
 
 ## Cookies
 
