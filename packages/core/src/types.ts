@@ -30,6 +30,8 @@ export interface OIDCState {
   nonce: string;
   codeVerifier: string;
   redirectUri: string;
+  /** Created-at epoch ms. Optional for backward compat with cookies written by older versions. */
+  ts?: number;
 }
 
 /**

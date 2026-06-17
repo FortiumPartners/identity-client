@@ -3,6 +3,13 @@ export type { IdentityClientConfig } from './identity-client.js';
 export { createSessionToken, verifySessionToken } from './session.js';
 export type { SessionConfig } from './session.js';
 export { verifyM2MToken } from './m2m.js';
+export {
+  parsePendingStates,
+  appendPendingState,
+  selectPendingState,
+  removePendingState,
+  serializePendingStates,
+} from './pending-states.js';
 export type {
   FortiumClaims,
   OIDCState,

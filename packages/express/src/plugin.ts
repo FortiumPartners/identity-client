@@ -15,8 +15,13 @@ import {
   createSessionToken,
   verifySessionToken,
   verifyM2MToken,
+  parsePendingStates,
+  appendPendingState,
+  selectPendingState,
+  removePendingState,
+  serializePendingStates,
 } from '@fortium/identity-client';
-import type { FortiumClaims, OIDCState, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
+import type { FortiumClaims, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
 
 export interface IdentityPluginOptions {
   /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com) */
@@ -147,7 +152,11 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
         redirectUrl = parsed.toString();
       }
 
-      res.cookie(OIDC_STATE_COOKIE, JSON.stringify(state), cookieOpts(600));
+      // Append to the array of pending auth attempts so overlapping flows
+      // (double-click, second tab) don't clobber each other's PKCE state.
+      const existingStates = parsePendingStates(readSignedCookie(req, OIDC_STATE_COOKIE));
+      const updatedStates = appendPendingState(existingStates, state);
+      res.cookie(OIDC_STATE_COOKIE, serializePendingStates(updatedStates), cookieOpts(600));
       res.redirect(redirectUrl);
     } catch (error) {
       console.error('Login redirect failed:', error);
@@ -178,13 +187,23 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
         return res.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 
-      const oidcState: OIDCState = JSON.parse(stateValue);
-      if (state !== oidcState.state) {
+      // Select the pending attempt whose state matches the returned param.
+      // Overlapping flows store multiple attempts; consume only the matching one.
+      const pendingStates = parsePendingStates(stateValue);
+      const oidcState = selectPendingState(pendingStates, state);
+      if (!oidcState) {
         res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
         return res.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
       }
 
-      res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+      // Remove the consumed attempt, leaving any other in-flight attempts intact.
+      // Rewrite the cookie BEFORE the exchange (mirrors prior clear-before-exchange).
+      const remainingStates = removePendingState(pendingStates, state);
+      if (remainingStates.length === 0) {
+        res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+      } else {
+        res.cookie(OIDC_STATE_COOKIE, serializePendingStates(remainingStates), cookieOpts(600));
+      }
 
       // Exchange code for tokens
       const tokenResult = await client.exchangeCode(code, oidcState);

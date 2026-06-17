@@ -8,7 +8,7 @@
  * reimplementing the OIDC flow.
  */
 import { Router } from 'express';
-import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, } from '@fortium/identity-client';
+import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, } from '@fortium/identity-client';
 // Cookie name helpers
 function cookieName(prefix, name) {
     return prefix ? `${prefix}_${name}` : name;
@@ -80,7 +80,11 @@ export function createIdentityRouter(opts) {
                 parsed.searchParams.set('prompt', promptParam);
                 redirectUrl = parsed.toString();
             }
-            res.cookie(OIDC_STATE_COOKIE, JSON.stringify(state), cookieOpts(600));
+            // Append to the array of pending auth attempts so overlapping flows
+            // (double-click, second tab) don't clobber each other's PKCE state.
+            const existingStates = parsePendingStates(readSignedCookie(req, OIDC_STATE_COOKIE));
+            const updatedStates = appendPendingState(existingStates, state);
+            res.cookie(OIDC_STATE_COOKIE, serializePendingStates(updatedStates), cookieOpts(600));
             res.redirect(redirectUrl);
         }
         catch (error) {
@@ -108,12 +112,23 @@ export function createIdentityRouter(opts) {
                 res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
                 return res.redirect(`${opts.frontendUrl}/login?error=state_missing`);
             }
-            const oidcState = JSON.parse(stateValue);
-            if (state !== oidcState.state) {
+            // Select the pending attempt whose state matches the returned param.
+            // Overlapping flows store multiple attempts; consume only the matching one.
+            const pendingStates = parsePendingStates(stateValue);
+            const oidcState = selectPendingState(pendingStates, state);
+            if (!oidcState) {
                 res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
                 return res.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
             }
-            res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+            // Remove the consumed attempt, leaving any other in-flight attempts intact.
+            // Rewrite the cookie BEFORE the exchange (mirrors prior clear-before-exchange).
+            const remainingStates = removePendingState(pendingStates, state);
+            if (remainingStates.length === 0) {
+                res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+            }
+            else {
+                res.cookie(OIDC_STATE_COOKIE, serializePendingStates(remainingStates), cookieOpts(600));
+            }
             // Exchange code for tokens
             const tokenResult = await client.exchangeCode(code, oidcState);
             const { idToken, refreshToken, claims } = tokenResult;
@@ -218,6 +233,92 @@ export function createIdentityRouter(opts) {
             res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
             res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
             return res.status(401).json({ error: { code: 'REFRESH_FAILED', message: 'Token refresh failed' } });
+        }
+    });
+    // ------------------------------------------------------------------
+    // GET /widget-token — Exchange user session for a narrow-audience JWT
+    // ------------------------------------------------------------------
+    // RFC 8693 Token Exchange consumer route. The user must be authenticated
+    // (signed session cookie). The app's OIDC client_id must be allowlisted
+    // on Identity for the requested `audience` (see Identity's migration 033
+    // + 034 + docs/WIDGET_TOKEN_EXCHANGE.md).
+    //
+    // Returns a short-lived JWT (5-minute TTL) the frontend can hand to a
+    // downstream service (e.g. the Ideas widget). The receiver validates
+    // signature via Identity's JWKS and asserts aud === <its own hostname>.
+    router.get('/widget-token', async (req, res) => {
+        const start = Date.now();
+        const audience = typeof req.query.audience === 'string' ? req.query.audience : undefined;
+        if (!audience) {
+            return res.status(400).json({
+                error: 'invalid_request',
+                error_description: 'audience query parameter is required',
+            });
+        }
+        // Session validation — same shape as /me
+        const sessionToken = readSignedCookie(req, AUTH_TOKEN_COOKIE);
+        if (!sessionToken) {
+            return res.status(401).json({
+                error: 'unauthorized',
+                error_description: 'authenticated session required',
+            });
+        }
+        const session = await verifySessionToken(sessionToken, sessionConfig);
+        if (!session) {
+            return res.status(401).json({
+                error: 'unauthorized',
+                error_description: 'invalid session',
+            });
+        }
+        try {
+            const tokenResponse = await client.requestWidgetToken(session.fortiumUserId, audience);
+            const duration = Date.now() - start;
+            console.log(JSON.stringify({
+                level: 'info',
+                msg: 'widget-token exchange succeeded',
+                audience,
+                subjectUserId: session.fortiumUserId,
+                durationMs: duration,
+            }));
+            return res.json({
+                accessToken: tokenResponse.access_token,
+                expiresIn: tokenResponse.expires_in,
+                tokenType: tokenResponse.token_type,
+                audience,
+            });
+        }
+        catch (err) {
+            const duration = Date.now() - start;
+            const oauthErr = err;
+            // Identity-returned 4xx — forward the OAuth error code verbatim
+            if (oauthErr.statusCode && oauthErr.statusCode >= 400 && oauthErr.statusCode < 500) {
+                console.log(JSON.stringify({
+                    level: 'warn',
+                    msg: 'widget-token exchange refused by Identity',
+                    audience,
+                    subjectUserId: session.fortiumUserId,
+                    durationMs: duration,
+                    identityStatus: oauthErr.statusCode,
+                    oauthError: oauthErr.oauthError,
+                }));
+                return res.status(oauthErr.statusCode).json({
+                    error: oauthErr.oauthError || 'invalid_request',
+                    error_description: oauthErr.message,
+                });
+            }
+            // Identity 5xx, network failure, or timeout → 503
+            console.log(JSON.stringify({
+                level: 'error',
+                msg: 'widget-token exchange failed (Identity unreachable)',
+                audience,
+                subjectUserId: session.fortiumUserId,
+                durationMs: duration,
+                err: oauthErr.message,
+            }));
+            return res.status(503).json({
+                error: 'service_unavailable',
+                error_description: 'identity provider is unavailable',
+            });
         }
     });
     // ------------------------------------------------------------------
