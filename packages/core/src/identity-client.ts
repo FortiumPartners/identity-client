@@ -87,7 +87,7 @@ export class IdentityClient {
 
     return {
       url: authUrl.toString(),
-      state: { state, nonce, codeVerifier, redirectUri },
+      state: { state, nonce, codeVerifier, redirectUri, ts: Date.now() },
     };
   }
 

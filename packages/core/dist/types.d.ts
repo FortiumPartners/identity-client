@@ -28,6 +28,8 @@ export interface OIDCState {
     nonce: string;
     codeVerifier: string;
     redirectUri: string;
+    /** Created-at epoch ms. Optional for backward compat with cookies written by older versions. */
+    ts?: number;
 }
 /**
  * Raw token response from the Identity /oidc/token endpoint.
