@@ -106,3 +106,50 @@ export function removePendingState(states: OIDCState[], returnedState: string): 
 export function serializePendingStates(states: OIDCState[]): string {
   return JSON.stringify(states);
 }
+
+/**
+ * Validate a caller-supplied post-login landing path (`?returnTo=` on /login).
+ *
+ * The plugin appends the value to its frontendUrl, so it must be a same-origin
+ * relative path and nothing else:
+ * - exactly one leading `/` (`//host` and `/\host` are protocol-relative to browsers)
+ * - printable ASCII only (0x20–0x7E): no CR/LF/NUL, and nothing Node would
+ *   refuse in a Location header — percent-encode anything else
+ * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`)
+ * - at most `maxLength` characters
+ * - percent-decodes without throwing, and the decoded form ALSO has exactly one
+ *   leading `/` (so `%2F%2F` cannot smuggle a protocol-relative URL through a
+ *   downstream router that decodes before redirecting)
+ *
+ * Returns the ORIGINAL string when it passes, never the decoded form; returns
+ * `undefined` otherwise so the caller falls back to its configured default.
+ * Pure; never throws.
+ */
+export function sanitizeReturnTo(raw: unknown, maxLength = 512): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  if (raw.length === 0 || raw.length > maxLength) return undefined;
+  if (!hasSingleLeadingSlash(raw)) return undefined;
+
+  let inPath = true;
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    if (code < 0x20 || code > 0x7e) return undefined;
+    const ch = raw[i];
+    if (ch === '?' || ch === '#') inPath = false;
+    if (inPath && ch === ':') return undefined;
+  }
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return undefined;
+  }
+  if (!hasSingleLeadingSlash(decoded)) return undefined;
+
+  return raw;
+}
+
+function hasSingleLeadingSlash(value: string): boolean {
+  return value[0] === '/' && value[1] !== '/' && value[1] !== '\\';
+}

@@ -9,6 +9,7 @@ export {
   selectPendingState,
   removePendingState,
   serializePendingStates,
+  sanitizeReturnTo,
 } from './pending-states.js';
 export type {
   FortiumClaims,

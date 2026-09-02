@@ -103,13 +103,17 @@ app.get('/api/protected', { preHandler: [auth] }, async (request, reply) => {
 });
 ```
 
+### Per-request landing path (Fastify, since 1.3.0)
+
+`GET /auth/login?returnTo=/some/path` makes that login's `/auth/callback` redirect to `frontendUrl + returnTo` instead of `postLoginPath`. Only a relative path is accepted: exactly one leading `/`, printable ASCII (percent-encode anything else), no `:` before the query string, at most 512 characters, and the percent-decoded form must still start with a single `/`. Anything else is dropped and the callback falls back to `postLoginPath`. The path is stored with that attempt's pending OIDC state, so overlapping logins each land on their own.
+
 ## Routes (both plugins)
 
 Both plugins register the same routes:
 
 | Route | Method | Description |
 |---|---|---|
-| `/login` | GET | Redirect to Identity for OIDC login |
+| `/login` | GET | Redirect to Identity for OIDC login (Fastify: optional `?returnTo=/path`, see above) |
 | `/callback` | GET | Handle OIDC callback, set session cookies |
 | `/me` | GET | Return current user from session |
 | `/refresh` | POST | Exchange refresh token for new tokens |
@@ -157,7 +161,7 @@ All cookies are signed, httpOnly, sameSite=lax, secure in production.
 | `sessionIssuer` | Yes | Issuer name for session JWTs |
 | `sessionExpiresIn` | No | Session JWT expiry (default: `'24h'`) |
 | `cookiePrefix` | No | Prefix for cookie names |
-| `postLoginPath` | No | Redirect path after login (default: `/dashboard`) |
+| `postLoginPath` | No | Redirect path after login (default: `/dashboard`); Fastify callers can override per request with `?returnTo=` |
 | `postLogoutPath` | No | Redirect path after logout (default: `/login`) |
 | `authorize` | No | Hook called after OIDC auth — check permissions, return extra session data |
 | `getMe` | No | Hook to build `/me` response |

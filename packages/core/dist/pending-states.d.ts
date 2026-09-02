@@ -45,3 +45,22 @@ export declare function removePendingState(states: OIDCState[], returnedState: s
  * Serialize pending states for storage in the cookie.
  */
 export declare function serializePendingStates(states: OIDCState[]): string;
+/**
+ * Validate a caller-supplied post-login landing path (`?returnTo=` on /login).
+ *
+ * The plugin appends the value to its frontendUrl, so it must be a same-origin
+ * relative path and nothing else:
+ * - exactly one leading `/` (`//host` and `/\host` are protocol-relative to browsers)
+ * - printable ASCII only (0x20–0x7E): no CR/LF/NUL, and nothing Node would
+ *   refuse in a Location header — percent-encode anything else
+ * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`)
+ * - at most `maxLength` characters
+ * - percent-decodes without throwing, and the decoded form ALSO has exactly one
+ *   leading `/` (so `%2F%2F` cannot smuggle a protocol-relative URL through a
+ *   downstream router that decodes before redirecting)
+ *
+ * Returns the ORIGINAL string when it passes, never the decoded form; returns
+ * `undefined` otherwise so the caller falls back to its configured default.
+ * Pure; never throws.
+ */
+export declare function sanitizeReturnTo(raw: unknown, maxLength?: number): string | undefined;
