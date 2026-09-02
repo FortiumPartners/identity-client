@@ -147,6 +147,15 @@ describe('sanitizeReturnTo', () => {
     expect(sanitizeReturnTo('/%E0%A4%A')).toBeUndefined();
   });
 
+  it('applies the colon-in-path rule to the percent-decoded form too', () => {
+    expect(sanitizeReturnTo('/javascript%3Aalert(1)')).toBeUndefined();
+    expect(sanitizeReturnTo('/%6a%61%76%61%73%63%72%69%70%74%3Aalert(1)')).toBeUndefined();
+    // A ':' inside the query is still fine in both raw and decoded forms
+    expect(sanitizeReturnTo('/resume?next=https%3A%2F%2Fapp.test%2Fx')).toBe(
+      '/resume?next=https%3A%2F%2Fapp.test%2Fx',
+    );
+  });
+
   it('enforces the length cap (512 by default, overridable)', () => {
     const atMax = '/' + 'a'.repeat(511); // 512 chars
     const overMax = '/' + 'a'.repeat(512); // 513 chars

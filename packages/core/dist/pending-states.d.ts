@@ -53,7 +53,9 @@ export declare function serializePendingStates(states: OIDCState[]): string;
  * - exactly one leading `/` (`//host` and `/\host` are protocol-relative to browsers)
  * - printable ASCII only (0x20–0x7E): no CR/LF/NUL, and nothing Node would
  *   refuse in a Location header — percent-encode anything else
- * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`)
+ * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`),
+ *   checked on the raw string AND on its percent-decoded form, so
+ *   `/javascript%3A...` cannot slip through either
  * - at most `maxLength` characters
  * - percent-decodes without throwing, and the decoded form ALSO has exactly one
  *   leading `/` (so `%2F%2F` cannot smuggle a protocol-relative URL through a

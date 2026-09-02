@@ -97,7 +97,9 @@ export function serializePendingStates(states) {
  * - exactly one leading `/` (`//host` and `/\host` are protocol-relative to browsers)
  * - printable ASCII only (0x20–0x7E): no CR/LF/NUL, and nothing Node would
  *   refuse in a Location header — percent-encode anything else
- * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`)
+ * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`),
+ *   checked on the raw string AND on its percent-decoded form, so
+ *   `/javascript%3A...` cannot slip through either
  * - at most `maxLength` characters
  * - percent-decodes without throwing, and the decoded form ALSO has exactly one
  *   leading `/` (so `%2F%2F` cannot smuggle a protocol-relative URL through a
@@ -114,17 +116,10 @@ export function sanitizeReturnTo(raw, maxLength = 512) {
         return undefined;
     if (!hasSingleLeadingSlash(raw))
         return undefined;
-    let inPath = true;
-    for (let i = 0; i < raw.length; i++) {
-        const code = raw.charCodeAt(i);
-        if (code < 0x20 || code > 0x7e)
-            return undefined;
-        const ch = raw[i];
-        if (ch === '?' || ch === '#')
-            inPath = false;
-        if (inPath && ch === ':')
-            return undefined;
-    }
+    if (!isPrintableAscii(raw))
+        return undefined;
+    if (hasColonInPath(raw))
+        return undefined;
     let decoded;
     try {
         decoded = decodeURIComponent(raw);
@@ -134,8 +129,29 @@ export function sanitizeReturnTo(raw, maxLength = 512) {
     }
     if (!hasSingleLeadingSlash(decoded))
         return undefined;
+    if (hasColonInPath(decoded))
+        return undefined;
     return raw;
 }
 function hasSingleLeadingSlash(value) {
     return value[0] === '/' && value[1] !== '/' && value[1] !== '\\';
+}
+/** Every UTF-16 code unit in 0x20–0x7E. */
+function isPrintableAscii(value) {
+    for (let i = 0; i < value.length; i++) {
+        const code = value.charCodeAt(i);
+        if (code < 0x20 || code > 0x7e)
+            return false;
+    }
+    return true;
+}
+/** A `:` anywhere before the first `?` or `#`, i.e. inside the path segment. */
+function hasColonInPath(value) {
+    for (const ch of value) {
+        if (ch === '?' || ch === '#')
+            return false;
+        if (ch === ':')
+            return true;
+    }
+    return false;
 }
