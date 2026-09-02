@@ -167,6 +167,60 @@ describe('sanitizeReturnTo', () => {
     expect(sanitizeReturnTo('/abcd', 5)).toBe('/abcd');
   });
 
+  describe('encoded-size cap (what actually lands in the cookie)', () => {
+    // The cookie serializer stores encodeURIComponent(JSON.stringify(states)),
+    // so this is the per-value cost the cap has to bound.
+    const encodedLength = (v: string) => encodeURIComponent(JSON.stringify(v)).length;
+
+    it('(a) a 256-char path of ?/=/& passes the character cap but is rejected by the byte cap', () => {
+      const v = '/' + '?=&'.repeat(85); // everything after the first '?' → colon rule irrelevant
+      expect(v).toHaveLength(256);
+      expect(encodedLength(v)).toBeGreaterThan(384);
+      expect(sanitizeReturnTo(v)).toBeUndefined();
+    });
+
+    it('(b) a 256-char alphanumeric path is still accepted (the two caps agree on plain paths)', () => {
+      const v = '/' + 'a'.repeat(255);
+      expect(v).toHaveLength(256);
+      expect(encodedLength(v)).toBeLessThanOrEqual(384);
+      expect(sanitizeReturnTo(v)).toBe(v);
+    });
+
+    it('(c) boundary: encoded length 384 accepted, 385 rejected; maxEncodedLength is overridable', () => {
+      const at = '/' + '?'.repeat(100) + 'a'.repeat(75); // 9 + 300 + 75
+      const over = '/' + '?'.repeat(100) + 'a'.repeat(76);
+      expect(encodeURIComponent(JSON.stringify(at))).toHaveLength(384);
+      expect(encodeURIComponent(JSON.stringify(over))).toHaveLength(385);
+      expect(sanitizeReturnTo(at)).toBe(at);
+      expect(sanitizeReturnTo(over)).toBeUndefined();
+      expect(sanitizeReturnTo(over, 256, 385)).toBe(over);
+    });
+
+    it('(d) five pending attempts, each with a worst-case accepted returnTo, fit in a 4 KB cookie', () => {
+      // '"' is the most expensive accepted character: JSON-escaped to \" then
+      // percent-encoded to %5C%22, six bytes. Fill to exactly the cap.
+      const worst = '/?' + '"'.repeat(62); // 12 + 6 × 62 = 384
+      expect(encodedLength(worst)).toBe(384);
+      expect(sanitizeReturnTo(worst)).toBe(worst);
+
+      // Realistic attempt shape: 43-char base64url state/nonce/verifier (32
+      // random bytes), a production-length callback URL, epoch-ms timestamp.
+      const b64url = (seed: string) => (seed.repeat(43)).slice(0, 43);
+      const states: OIDCState[] = Array.from({ length: 5 }, (_, i) => ({
+        state: b64url(`s${i}`),
+        nonce: b64url(`n${i}`),
+        codeVerifier: b64url(`v${i}`),
+        redirectUri: 'https://gateway.fortiumsoftware.com/auth/callback',
+        ts: 1_780_000_000_000 + i,
+        returnTo: worst,
+      }));
+
+      const cookieValue = encodeURIComponent(serializePendingStates(states));
+      // 64 bytes of headroom for the signature and the cookie name.
+      expect(cookieValue.length).toBeLessThan(4096 - 64);
+    });
+  });
+
   it('round-trip: an OIDCState with returnTo survives serialize → parse intact', () => {
     const withReturnTo = mkState({ state: 'rt', returnTo: '/candidates/123/step?x=1#frag' });
     const plain = mkState({ state: 'plain' });

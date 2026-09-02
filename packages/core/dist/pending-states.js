@@ -100,8 +100,17 @@ export function serializePendingStates(states) {
  * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`),
  *   checked on the raw string AND on its percent-decoded form, so
  *   `/javascript%3A...` cannot slip through either
- * - at most `maxLength` characters (default 256, sized so five pending attempts
- *   stay under the 4 KB cookie limit)
+ * - at most `maxLength` characters (default 256): the readable bound
+ * - at most `maxEncodedLength` bytes once JSON-escaped and percent-encoded
+ *   (default 384). That is the form the cookie serializer actually stores, and
+ *   this is the bound that keeps the cookie under the browser's 4096-byte
+ *   name+value limit. Measured through the Fastify plugin, five pending
+ *   attempts with no returnTo and a 49-char callback URL are 1694 bytes
+ *   (signature and name included); each stored returnTo adds 20 bytes of JSON
+ *   key/separator overhead plus its encoded length, so five at 384 add 2020
+ *   (~3.7 KB total), and stay at ~4.0 KB even with a 95-char callback URL and
+ *   a cookie-name prefix. At 448 that 95-char case is 4337 bytes and the
+ *   browser drops the cookie.
  * - percent-decodes without throwing, and the decoded form ALSO has exactly one
  *   leading `/` (so `%2F%2F` cannot smuggle a protocol-relative URL through a
  *   downstream router that decodes before redirecting)
@@ -110,7 +119,7 @@ export function serializePendingStates(states) {
  * `undefined` otherwise so the caller falls back to its configured default.
  * Pure; never throws.
  */
-export function sanitizeReturnTo(raw, maxLength = 256) {
+export function sanitizeReturnTo(raw, maxLength = 256, maxEncodedLength = 384) {
     if (typeof raw !== 'string')
         return undefined;
     if (raw.length === 0 || raw.length > maxLength)
@@ -131,6 +140,11 @@ export function sanitizeReturnTo(raw, maxLength = 256) {
     if (!hasSingleLeadingSlash(decoded))
         return undefined;
     if (hasColonInPath(decoded))
+        return undefined;
+    // The cookie holds serializePendingStates() output (JSON) run through the
+    // cookie serializer's encodeURIComponent, so bound that form, not the
+    // character count: '?', '=' and '&' triple, '"' and '\' sextuple.
+    if (encodeURIComponent(JSON.stringify(raw)).length > maxEncodedLength)
         return undefined;
     return raw;
 }

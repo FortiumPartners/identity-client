@@ -29,7 +29,9 @@ const COOKIE_SECRET = 'plugin-test-cookie-secret-not-real';
 
 const realFetch = global.fetch;
 
-async function buildApp(extra: { postLoginPath?: string } = {}): Promise<FastifyInstance> {
+async function buildApp(
+  extra: { postLoginPath?: string; callbackUrl?: string; cookiePrefix?: string } = {},
+): Promise<FastifyInstance> {
   const app = fastify({ logger: false });
   await app.register(fastifyCookie, { secret: COOKIE_SECRET });
   await app.register(
@@ -276,5 +278,52 @@ describe('Fastify /login?returnTo → /callback lands on the requested path', ()
 
     const resA = await callback(app, a.state, b.cookie);
     expect(resA.headers.location).toBe('https://app.test/a');
+  });
+});
+
+/**
+ * The cookie-size claim, end to end: five real /auth/login calls, each with a
+ * returnTo at the encoded-size cap, through the real signer and cookie
+ * serializer, with a production-length callback URL and a cookie-name
+ * prefix. The Set-Cookie name=value pair must stay under the 4096-byte
+ * browser limit or the browser drops oidc_state and every callback fails
+ * state_missing.
+ */
+describe('Fastify five overlapping logins with a max-size returnTo fit in the cookie', () => {
+  it('Set-Cookie name=value stays under 4096 bytes', async () => {
+    const app = await buildApp({
+      callbackUrl: 'https://talent-api.fortiumsoftware.com/auth/callback/x',
+      cookiePrefix: 'talent',
+    });
+    try {
+      const name = 'talent_oidc_state';
+      const worst = '/?' + '"'.repeat(62); // encodes to exactly 384 bytes
+      expect(encodeURIComponent(JSON.stringify(worst))).toHaveLength(384);
+
+      let cookie: string | undefined;
+      let pair = '';
+      for (let n = 0; n < 5; n++) {
+        const res = await app.inject({
+          method: 'GET',
+          url: `/auth/login?returnTo=${encodeURIComponent(worst)}`,
+          cookies: cookie ? { [name]: cookie } : undefined,
+        });
+        expect(res.statusCode).toBe(302);
+        const raw = res.headers['set-cookie'];
+        const arr = Array.isArray(raw) ? raw : raw ? [String(raw)] : [];
+        pair = arr.find((c) => c.startsWith(`${name}=`))!.split(';')[0];
+        cookie = decodeURIComponent(pair.slice(name.length + 1));
+      }
+
+      // All five attempts are present and each kept its returnTo.
+      const json = cookie!.slice(0, cookie!.lastIndexOf('.'));
+      const states = JSON.parse(json) as Array<{ returnTo?: string }>;
+      expect(states).toHaveLength(5);
+      expect(states.every((s) => s.returnTo === worst)).toBe(true);
+
+      expect(pair.length).toBeLessThan(4096);
+    } finally {
+      await app.close();
+    }
   });
 });

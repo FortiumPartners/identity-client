@@ -105,7 +105,7 @@ app.get('/api/protected', { preHandler: [auth] }, async (request, reply) => {
 
 ### Per-request landing path (Fastify, since 1.3.0)
 
-`GET /auth/login?returnTo=/some/path` makes that login's `/auth/callback` redirect to `frontendUrl + returnTo` instead of `postLoginPath`. Only a relative path is accepted: exactly one leading `/`, printable ASCII (percent-encode anything else), no `:` before the query string, at most 256 characters, and the percent-decoded form must still start with a single `/`. Anything else is dropped and the callback falls back to `postLoginPath`. The path is stored with that attempt's pending OIDC state, so overlapping logins each land on their own.
+`GET /auth/login?returnTo=/some/path` makes that login's `/auth/callback` redirect to `frontendUrl + returnTo` instead of `postLoginPath`. Only a relative path is accepted: exactly one leading `/`, printable ASCII (percent-encode anything else), no `:` before the query string, at most 256 characters and at most 384 bytes once cookie-encoded, and the percent-decoded form must still start with a single `/`. Anything else is dropped and the callback falls back to `postLoginPath`. The path is stored with that attempt's pending OIDC state, so overlapping logins each land on their own.
 
 ## Routes (both plugins)
 

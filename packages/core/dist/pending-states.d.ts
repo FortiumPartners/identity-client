@@ -56,8 +56,17 @@ export declare function serializePendingStates(states: OIDCState[]): string;
  * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`),
  *   checked on the raw string AND on its percent-decoded form, so
  *   `/javascript%3A...` cannot slip through either
- * - at most `maxLength` characters (default 256, sized so five pending attempts
- *   stay under the 4 KB cookie limit)
+ * - at most `maxLength` characters (default 256): the readable bound
+ * - at most `maxEncodedLength` bytes once JSON-escaped and percent-encoded
+ *   (default 384). That is the form the cookie serializer actually stores, and
+ *   this is the bound that keeps the cookie under the browser's 4096-byte
+ *   name+value limit. Measured through the Fastify plugin, five pending
+ *   attempts with no returnTo and a 49-char callback URL are 1694 bytes
+ *   (signature and name included); each stored returnTo adds 20 bytes of JSON
+ *   key/separator overhead plus its encoded length, so five at 384 add 2020
+ *   (~3.7 KB total), and stay at ~4.0 KB even with a 95-char callback URL and
+ *   a cookie-name prefix. At 448 that 95-char case is 4337 bytes and the
+ *   browser drops the cookie.
  * - percent-decodes without throwing, and the decoded form ALSO has exactly one
  *   leading `/` (so `%2F%2F` cannot smuggle a protocol-relative URL through a
  *   downstream router that decodes before redirecting)
@@ -66,4 +75,4 @@ export declare function serializePendingStates(states: OIDCState[]): string;
  * `undefined` otherwise so the caller falls back to its configured default.
  * Pure; never throws.
  */
-export declare function sanitizeReturnTo(raw: unknown, maxLength?: number): string | undefined;
+export declare function sanitizeReturnTo(raw: unknown, maxLength?: number, maxEncodedLength?: number): string | undefined;
