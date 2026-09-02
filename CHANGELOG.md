@@ -4,6 +4,19 @@ All notable changes to `@fortium/identity-client`, `@fortium/identity-client/exp
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-09-02
+
+### Added
+
+- **Fastify: per-request `returnTo` on `GET /auth/login`.** `GET /auth/login?returnTo=/some/path` stores the path on that attempt's pending OIDC state, and the matching `/auth/callback` redirects to `frontendUrl + returnTo`. Only a validated relative path is accepted (see README); anything else is dropped and the callback falls back to `postLoginPath`, so behaviour without `returnTo` is unchanged. Overlapping logins each keep their own path. Fixes Gateway's `/resume` links, which always landed on the dashboard. (#10)
+- **`sanitizeReturnTo(raw, maxLength?)`** in `@fortium/identity-client` core, and an optional `returnTo` field on `OIDCState`.
+
+## [1.2.0] — 2026-06-17
+
+### Fixed
+
+- **Overlapping OIDC login attempts no longer clobber each other.** The `oidc_state` cookie holds an array of pending attempts (capped at 5, TTL-pruned) and `/auth/callback` selects the one matching the returned `state`, so a double-click or second tab no longer ends in `invalid_grant`. Cookies written by the single-object format still parse. Express and Fastify. (#8)
+
 ## [1.1.0] — 2026-05-12
 
 ### Added

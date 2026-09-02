@@ -32,6 +32,11 @@ export interface OIDCState {
   redirectUri: string;
   /** Created-at epoch ms. Optional for backward compat with cookies written by older versions. */
   ts?: number;
+  /**
+   * Relative path to land on after THIS attempt's callback, validated by
+   * sanitizeReturnTo at /login. Absent → the plugin's configured postLoginPath.
+   */
+  returnTo?: string;
 }
 
 /**

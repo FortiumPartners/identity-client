@@ -21,6 +21,7 @@ import {
   selectPendingState,
   removePendingState,
   serializePendingStates,
+  sanitizeReturnTo,
 } from '@fortium/identity-client';
 import type { FortiumClaims, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
 
@@ -148,6 +149,24 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     // breaks behind reverse proxies (e.g., nginx → Render internal hostname).
     const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
 
+    // Optional per-request landing path. Only a validated relative path is
+    // kept (see sanitizeReturnTo); anything else is dropped and /callback
+    // falls back to postLoginPath. It rides on THIS attempt's pending state,
+    // so overlapping logins each keep their own.
+    const rawReturnTo = (request.query as Record<string, unknown>).returnTo;
+    const returnTo = sanitizeReturnTo(rawReturnTo);
+    if (returnTo) {
+      state.returnTo = returnTo;
+    } else if (rawReturnTo !== undefined) {
+      request.log.debug(
+        {
+          returnToType: typeof rawReturnTo,
+          returnToLength: typeof rawReturnTo === 'string' ? rawReturnTo.length : undefined,
+        },
+        'OIDC login: returnTo rejected, falling back to postLoginPath',
+      );
+    }
+
     // Append optional OIDC prompt parameter if provided and valid
     const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
     const promptParam = (request.query as Record<string, string>).prompt;
@@ -246,7 +265,9 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
         reply.setCookie(REFRESH_TOKEN_COOKIE, refreshToken, cookieOpts(7 * 86400)); // 7d
       }
 
-      reply.redirect(postLoginRedirect);
+      // Land on this attempt's returnTo (validated at /login, carried in the
+      // signed state cookie) or the registration-time default.
+      reply.redirect(oidcState.returnTo ? `${opts.frontendUrl}${oidcState.returnTo}` : postLoginRedirect);
     } catch (error) {
       app.log.error({ err: error, message: error instanceof Error ? error.message : String(error) }, 'OIDC callback failed');
       reply.redirect(`${opts.frontendUrl}/login?error=callback_failed`);
