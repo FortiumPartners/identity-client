@@ -5,6 +5,7 @@ import {
   selectPendingState,
   removePendingState,
   serializePendingStates,
+  sanitizeReturnTo,
 } from '../packages/core/src/pending-states.js';
 import type { OIDCState } from '../packages/core/src/types.js';
 
@@ -100,5 +101,69 @@ describe('pending-states helpers', () => {
   it('serialize round-trips through parse', () => {
     const states = [mkState({ state: 'x' }), mkState({ state: 'y' })];
     expect(parsePendingStates(serializePendingStates(states))).toEqual(states);
+  });
+});
+
+describe('sanitizeReturnTo', () => {
+  it('accepts a relative path and returns it unchanged', () => {
+    expect(sanitizeReturnTo('/nda')).toBe('/nda');
+    expect(sanitizeReturnTo('/candidates/123/step?x=1#frag')).toBe('/candidates/123/step?x=1#frag');
+    expect(sanitizeReturnTo('/')).toBe('/');
+    // `:` is only forbidden in the path segment — a URL inside the query is fine
+    expect(sanitizeReturnTo('/resume?next=https://app.test/x')).toBe('/resume?next=https://app.test/x');
+    // Non-ASCII must arrive percent-encoded; the encoded form is returned as-is
+    expect(sanitizeReturnTo('/candidates/Jos%C3%A9')).toBe('/candidates/Jos%C3%A9');
+  });
+
+  it('rejects non-strings and the empty string', () => {
+    expect(sanitizeReturnTo(undefined)).toBeUndefined();
+    expect(sanitizeReturnTo(null)).toBeUndefined();
+    expect(sanitizeReturnTo(42)).toBeUndefined();
+    expect(sanitizeReturnTo(['/a', '/b'])).toBeUndefined(); // ?returnTo=/a&returnTo=/b parses as an array
+    expect(sanitizeReturnTo('')).toBeUndefined();
+  });
+
+  it('rejects anything that is not a single-leading-slash path', () => {
+    expect(sanitizeReturnTo('nda')).toBeUndefined();
+    expect(sanitizeReturnTo('//evil.com')).toBeUndefined();
+    expect(sanitizeReturnTo('/\\evil.com')).toBeUndefined();
+    expect(sanitizeReturnTo('https://evil.com/x')).toBeUndefined();
+    expect(sanitizeReturnTo('/javascript:alert(1)')).toBeUndefined();
+    expect(sanitizeReturnTo(' //evil.com')).toBeUndefined();
+  });
+
+  it('rejects control characters and non-ASCII (header injection; Node refuses them in Location)', () => {
+    expect(sanitizeReturnTo('/x\r\nSet-Cookie: a=b')).toBeUndefined();
+    expect(sanitizeReturnTo('/x\n')).toBeUndefined();
+    expect(sanitizeReturnTo('/x\0')).toBeUndefined();
+    expect(sanitizeReturnTo('/caf\u00e9')).toBeUndefined();
+  });
+
+  it('rejects values whose percent-decoded form escapes the origin, or that do not decode', () => {
+    expect(sanitizeReturnTo('/%2F%2Fevil.com')).toBeUndefined();
+    expect(sanitizeReturnTo('/%2f%2fevil.com')).toBeUndefined();
+    expect(sanitizeReturnTo('/%5Cevil.com')).toBeUndefined();
+    expect(sanitizeReturnTo('/%')).toBeUndefined(); // malformed escape → decodeURIComponent throws
+    expect(sanitizeReturnTo('/%E0%A4%A')).toBeUndefined();
+  });
+
+  it('enforces the length cap (512 by default, overridable)', () => {
+    const atMax = '/' + 'a'.repeat(511); // 512 chars
+    const overMax = '/' + 'a'.repeat(512); // 513 chars
+    expect(sanitizeReturnTo(atMax)).toBe(atMax);
+    expect(sanitizeReturnTo(overMax)).toBeUndefined();
+    expect(sanitizeReturnTo('/abcdef', 5)).toBeUndefined();
+    expect(sanitizeReturnTo('/abcd', 5)).toBe('/abcd');
+  });
+
+  it('round-trip: an OIDCState with returnTo survives serialize → parse intact', () => {
+    const withReturnTo = mkState({ state: 'rt', returnTo: '/candidates/123/step?x=1#frag' });
+    const plain = mkState({ state: 'plain' });
+    const parsed = parsePendingStates(serializePendingStates([withReturnTo, plain]));
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]).toEqual(withReturnTo);
+    expect(parsed[1]).toEqual(plain);
+    expect(selectPendingState(parsed, 'rt')?.returnTo).toBe('/candidates/123/step?x=1#frag');
+    expect(selectPendingState(parsed, 'plain')?.returnTo).toBeUndefined();
   });
 });
