@@ -100,7 +100,8 @@ export function serializePendingStates(states) {
  * - no `:` before the first `?` or `#` (rules out `/javascript:` and `://`),
  *   checked on the raw string AND on its percent-decoded form, so
  *   `/javascript%3A...` cannot slip through either
- * - at most `maxLength` characters
+ * - at most `maxLength` characters (default 256, sized so five pending attempts
+ *   stay under the 4 KB cookie limit)
  * - percent-decodes without throwing, and the decoded form ALSO has exactly one
  *   leading `/` (so `%2F%2F` cannot smuggle a protocol-relative URL through a
  *   downstream router that decodes before redirecting)
@@ -109,7 +110,7 @@ export function serializePendingStates(states) {
  * `undefined` otherwise so the caller falls back to its configured default.
  * Pure; never throws.
  */
-export function sanitizeReturnTo(raw, maxLength = 512) {
+export function sanitizeReturnTo(raw, maxLength = 256) {
     if (typeof raw !== 'string')
         return undefined;
     if (raw.length === 0 || raw.length > maxLength)

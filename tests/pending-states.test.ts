@@ -156,9 +156,11 @@ describe('sanitizeReturnTo', () => {
     );
   });
 
-  it('enforces the length cap (512 by default, overridable)', () => {
-    const atMax = '/' + 'a'.repeat(511); // 512 chars
-    const overMax = '/' + 'a'.repeat(512); // 513 chars
+  it('enforces the length cap (256 by default, overridable)', () => {
+    const atMax = '/' + 'a'.repeat(255); // 256 chars
+    const overMax = '/' + 'a'.repeat(256); // 257 chars
+    expect(atMax).toHaveLength(256);
+    expect(overMax).toHaveLength(257);
     expect(sanitizeReturnTo(atMax)).toBe(atMax);
     expect(sanitizeReturnTo(overMax)).toBeUndefined();
     expect(sanitizeReturnTo('/abcdef', 5)).toBeUndefined();
