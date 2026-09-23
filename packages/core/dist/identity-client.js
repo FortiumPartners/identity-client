@@ -212,10 +212,15 @@ export class IdentityClient {
     }
     /**
      * Build RP-initiated logout URL.
+     *
+     * client_id is always sent so the provider can validate
+     * post_logout_redirect_uri even when the id_token_hint is missing.
+     * With a hint present they match, since the ID token's audience is this client.
      */
     getLogoutUrl(idTokenHint, postLogoutRedirectUri) {
         const logoutUrl = new URL(OIDC_ENDPOINTS.endSession, this.issuer);
         const params = new URLSearchParams();
+        params.set('client_id', this.clientId);
         if (idTokenHint) {
             params.set('id_token_hint', idTokenHint);
         }

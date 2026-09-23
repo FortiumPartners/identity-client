@@ -4,6 +4,12 @@ All notable changes to `@fortium/identity-client`, `@fortium/identity-client/exp
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] — 2026-09-23
+
+### Fixed
+
+- **Logout always sends `client_id` on the end-session request.** When the `id_token` cookie was missing or failed to unsign, `getLogoutUrl` sent `post_logout_redirect_uri` with neither `id_token_hint` nor `client_id`, so Identity could not validate the redirect and the user stayed on its Signed Out page. `client_id` is now sent on every logout URL, alongside `id_token_hint` when there is one (OIDC RP-Initiated Logout 1.0 allows both; they match because the ID token's audience is this client). Applies to the Express and Fastify `GET` and `POST /logout` routes, which both build the URL through core. (#15)
+
 ## [1.3.0] — 2026-09-02
 
 ### Added

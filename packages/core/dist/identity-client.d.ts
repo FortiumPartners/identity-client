@@ -74,6 +74,10 @@ export declare class IdentityClient {
     validateAccessToken(accessToken: string): Promise<FortiumClaims>;
     /**
      * Build RP-initiated logout URL.
+     *
+     * client_id is always sent so the provider can validate
+     * post_logout_redirect_uri even when the id_token_hint is missing.
+     * With a hint present they match, since the ID token's audience is this client.
      */
     getLogoutUrl(idTokenHint?: string, postLogoutRedirectUri?: string): string;
 }
