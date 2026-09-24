@@ -8,7 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project adh
 
 ### Fixed
 
-- **Logout always sends `client_id` on the end-session request.** When the `id_token` cookie was missing or failed to unsign, `getLogoutUrl` sent `post_logout_redirect_uri` with neither `id_token_hint` nor `client_id`, so Identity could not validate the redirect and the user stayed on its Signed Out page. `client_id` is now sent on every logout URL, alongside `id_token_hint` when there is one (OIDC RP-Initiated Logout 1.0 allows both; they match because the ID token's audience is this client). Applies to the Express and Fastify `GET` and `POST /logout` routes, which both build the URL through core. (#15)
+- **Logout sends `client_id` when there is no `id_token_hint`.** When the `id_token` cookie was missing or failed to unsign, `getLogoutUrl` sent `post_logout_redirect_uri` with neither `id_token_hint` nor `client_id`, so Identity could not validate the redirect and the user stayed on its Signed Out page. `client_id` now takes the hint's place in that case. With a hint, the URL is unchanged: apps sharing a cookie domain can hold another client's ID token, and a mismatched `client_id` would make Identity reject the logout. Applies to the Express and Fastify `GET` and `POST /logout` routes, which both build the URL through core. (#15)
 
 ## [1.3.0] — 2026-09-02
 

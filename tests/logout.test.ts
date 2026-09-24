@@ -8,8 +8,9 @@ import fastifyCookie from '@fastify/cookie';
  * Without an id_token_hint, oidc-provider can only tie
  * post_logout_redirect_uri to a client through client_id; with neither, the
  * user is left on Identity's Signed Out page instead of returning to the app.
- * client_id is sent with the hint too (the ID token's audience is the same
- * client), so the hint-present URL gains client_id and is otherwise unchanged.
+ * With a hint, client_id stays off and the URL is unchanged: apps sharing a
+ * cookie domain can hold another client's ID token, and a client_id that
+ * differs from the hint's audience makes oidc-provider reject the logout.
  *
  * Express builds its logout URL through the same IdentityClient.getLogoutUrl
  * call as Fastify (packages/express/src/plugin.ts POST/GET /logout), so its
@@ -43,11 +44,11 @@ describe('IdentityClient.getLogoutUrl', () => {
     expect(p.has('id_token_hint')).toBe(false);
   });
 
-  it('hint present → id_token_hint, client_id and post_logout_redirect_uri', () => {
+  it('hint present → id_token_hint and post_logout_redirect_uri, no client_id', () => {
     const p = params(client.getLogoutUrl(ID_TOKEN, POST_LOGOUT));
     expect(p.get('id_token_hint')).toBe(ID_TOKEN);
-    expect(p.get('client_id')).toBe(CLIENT_ID);
     expect(p.get('post_logout_redirect_uri')).toBe(POST_LOGOUT);
+    expect(p.has('client_id')).toBe(false);
   });
 });
 
@@ -103,11 +104,11 @@ describe('Fastify /auth/logout', () => {
       expect(p.has('id_token_hint')).toBe(false);
     });
 
-    it(`${method}: signed id_token cookie → id_token_hint plus client_id`, async () => {
+    it(`${method}: signed id_token cookie → id_token_hint, no client_id`, async () => {
       const p = params(await logoutUrl(method, { id_token: app.signCookie(ID_TOKEN) }));
       expect(p.get('id_token_hint')).toBe(ID_TOKEN);
-      expect(p.get('client_id')).toBe(CLIENT_ID);
       expect(p.get('post_logout_redirect_uri')).toBe(POST_LOGOUT);
+      expect(p.has('client_id')).toBe(false);
     });
   }
 });
