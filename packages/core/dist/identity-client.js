@@ -212,12 +212,20 @@ export class IdentityClient {
     }
     /**
      * Build RP-initiated logout URL.
+     *
+     * Without an id_token_hint, client_id is sent so the provider can still
+     * validate post_logout_redirect_uri. With a hint it is left off: apps that
+     * share a cookie domain can hold another client's ID token, and a client_id
+     * that differs from the hint's audience makes the provider reject logout.
      */
     getLogoutUrl(idTokenHint, postLogoutRedirectUri) {
         const logoutUrl = new URL(OIDC_ENDPOINTS.endSession, this.issuer);
         const params = new URLSearchParams();
         if (idTokenHint) {
             params.set('id_token_hint', idTokenHint);
+        }
+        else {
+            params.set('client_id', this.clientId);
         }
         if (postLogoutRedirectUri) {
             params.set('post_logout_redirect_uri', postLogoutRedirectUri);

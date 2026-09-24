@@ -74,6 +74,11 @@ export declare class IdentityClient {
     validateAccessToken(accessToken: string): Promise<FortiumClaims>;
     /**
      * Build RP-initiated logout URL.
+     *
+     * Without an id_token_hint, client_id is sent so the provider can still
+     * validate post_logout_redirect_uri. With a hint it is left off: apps that
+     * share a cookie domain can hold another client's ID token, and a client_id
+     * that differs from the hint's audience makes the provider reject logout.
      */
     getLogoutUrl(idTokenHint?: string, postLogoutRedirectUri?: string): string;
 }
