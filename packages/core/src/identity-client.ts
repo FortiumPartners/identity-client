@@ -22,6 +22,8 @@ const OIDC_ENDPOINTS = {
 
 const ENFORCED_SCOPES = 'openid profile email fortium offline_access';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export interface IdentityClientConfig {
   issuer: string;
   clientId: string;
@@ -123,6 +125,7 @@ export class IdentityClient {
     return {
       idToken: tokens.id_token,
       accessToken: tokens.access_token,
+      expiresIn: tokens.expires_in,
       refreshToken: tokens.refresh_token,
       claims,
     };
@@ -149,7 +152,13 @@ export class IdentityClient {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw new Error(`Token refresh failed: ${response.status} - ${errorBody}`);
+      // statusCode tells a refused refresh (re-authenticate) from an
+      // unreachable Identity (network errors throw without it).
+      const err = new Error(`Token refresh failed: ${response.status} - ${errorBody}`) as Error & {
+        statusCode: number;
+      };
+      err.statusCode = response.status;
+      throw err;
     }
 
     const tokens = (await response.json()) as TokenResponse;
@@ -157,6 +166,7 @@ export class IdentityClient {
     return {
       idToken: tokens.id_token,
       accessToken: tokens.access_token,
+      expiresIn: tokens.expires_in,
       refreshToken: tokens.refresh_token,
     };
   }
@@ -169,21 +179,23 @@ export class IdentityClient {
    * client must be allowlisted on Identity for the requested `audience`
    * via `oidc_clients.allowed_exchange_audiences` (migration 033).
    *
-   * Trust model: `subjectUserId` is the user's Fortium user_id from the
-   * authenticated session. The M2M client (this library, server-side)
-   * vouches that this user is authenticated; Identity verifies the user
-   * exists + is active but does NOT cryptographically verify caller
-   * ownership of the user. See M2M_TOKEN_AUDIENCE.md in Identity repo.
+   * Trust model (Identity #63): the subject is the user's own Identity
+   * access token, issued to this client. Identity resolves it and checks it
+   * is valid, bound to the calling client, and on a live grant, so holding
+   * the client secret alone no longer lets a caller mint a token for any
+   * user. A bare user_id is refused here before any request is made.
    *
-   * @param subjectUserId - Fortium user_id from session
+   * @param subjectAccessToken - The user's Identity access token (from the
+   *   code exchange or a refresh), never a user_id
    * @param audience - Requested audience (must be in client's allowlist)
    * @param timeoutMs - Hard timeout (default 5000ms)
    * @returns Token response from Identity (raw OAuth shape)
-   * @throws Error with `.statusCode` (number) and `.oauthError` (string) on
+   * @throws TypeError if `subjectAccessToken` is a UUID (a user_id);
+   *   Error with `.statusCode` (number) and `.oauthError` (string) on
    *   non-2xx response; or a generic Error on timeout/network failure.
    */
   async requestWidgetToken(
-    subjectUserId: string,
+    subjectAccessToken: string,
     audience: string,
     timeoutMs = 5000,
   ): Promise<{
@@ -193,11 +205,19 @@ export class IdentityClient {
     issued_token_type?: string;
     scope?: string;
   }> {
+    // Before 1.4.0 this argument was the user_id. Identity access tokens are
+    // never UUID-shaped, so a UUID here is a caller that has not migrated.
+    if (UUID_PATTERN.test(subjectAccessToken)) {
+      throw new TypeError(
+        'requestWidgetToken: subjectAccessToken must be the user\'s Identity access token, not a user_id',
+      );
+    }
+
     const tokenUrl = new URL(OIDC_ENDPOINTS.token, this.issuer);
 
     const body = new URLSearchParams({
       grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-      subject_token: subjectUserId,
+      subject_token: subjectAccessToken,
       subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
       audience,
       client_id: this.clientId,

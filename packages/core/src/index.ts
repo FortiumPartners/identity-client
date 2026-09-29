@@ -11,6 +11,11 @@ export {
   serializePendingStates,
   sanitizeReturnTo,
 } from './pending-states.js';
+export {
+  ACCESS_TOKEN_EXPIRY_SKEW_MS,
+  serializeAccessToken,
+  usableAccessToken,
+} from './access-token-cookie.js';
 export type {
   FortiumClaims,
   OIDCState,

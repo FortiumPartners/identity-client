@@ -22,8 +22,16 @@ import {
   removePendingState,
   serializePendingStates,
   sanitizeReturnTo,
+  serializeAccessToken,
+  usableAccessToken,
 } from '@fortium/identity-client';
-import type { FortiumClaims, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
+import type {
+  FortiumClaims,
+  SessionPayload,
+  M2MAuthOptions,
+  M2MTokenPayload,
+  RefreshResult,
+} from '@fortium/identity-client';
 
 export interface IdentityPluginOptions {
   /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com) */
@@ -84,6 +92,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   const AUTH_TOKEN_COOKIE = cookieName(prefix, 'auth_token');
   const ID_TOKEN_COOKIE = cookieName(prefix, 'id_token');
   const REFRESH_TOKEN_COOKIE = cookieName(prefix, 'refresh_token');
+  const ACCESS_TOKEN_COOKIE = cookieName(prefix, 'identity_access_token');
 
   const isProd = process.env.NODE_ENV === 'production';
 
@@ -139,6 +148,28 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     const unsigned = request.unsignCookie(raw);
     if (!unsigned.valid || !unsigned.value) return null;
     return unsigned.value;
+  }
+
+  // Helper: keep the user's access token for /widget-token's subject_token.
+  // The cookie lives exactly as long as the token does.
+  function setAccessTokenCookie(reply: FastifyReply, accessToken: string, expiresIn: number) {
+    reply.setCookie(ACCESS_TOKEN_COOKIE, serializeAccessToken(accessToken, expiresIn), cookieOpts(expiresIn));
+  }
+
+  // Helper: concurrent refreshes of one refresh token within THIS process
+  // share a single call. Refresh tokens rotate and Identity revokes the grant
+  // when a used one comes back. The map is process-local: two instances
+  // refreshing the same token still race, so an app running more than one
+  // needs sticky sessions or accepts that risk. The primary mitigation is
+  // refreshing only when the access token has expired (usableAccessToken).
+  const refreshesInFlight = new Map<string, Promise<RefreshResult>>();
+  function refreshOnce(refreshToken: string): Promise<RefreshResult> {
+    let pending = refreshesInFlight.get(refreshToken);
+    if (!pending) {
+      pending = client.refreshToken(refreshToken).finally(() => refreshesInFlight.delete(refreshToken));
+      refreshesInFlight.set(refreshToken, pending);
+    }
+    return pending;
   }
 
   // ------------------------------------------------------------------
@@ -213,6 +244,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
         reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
         reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
         reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+        reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
         return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 
@@ -235,7 +267,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       }
 
       // Exchange code for tokens
-      const { idToken, refreshToken, claims } = await client.exchangeCode(code, oidcState);
+      const { idToken, accessToken, expiresIn, refreshToken, claims } = await client.exchangeCode(code, oidcState);
 
       // Run authorize hook — apps check permissions, upsert records, etc.
       let extraSessionData: Record<string, unknown> = {};
@@ -264,6 +296,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       if (refreshToken) {
         reply.setCookie(REFRESH_TOKEN_COOKIE, refreshToken, cookieOpts(7 * 86400)); // 7d
       }
+      setAccessTokenCookie(reply, accessToken, expiresIn);
 
       // Land on this attempt's returnTo (validated at /login, carried in the
       // signed state cookie) or the registration-time default.
@@ -306,7 +339,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     }
 
     try {
-      const tokens = await client.refreshToken(refreshTokenValue);
+      const tokens = await refreshOnce(refreshTokenValue);
 
       if (tokens.idToken) {
         const claims = await client.validateIdToken(tokens.idToken);
@@ -331,6 +364,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       if (tokens.refreshToken) {
         reply.setCookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, cookieOpts(7 * 86400));
       }
+      setAccessTokenCookie(reply, tokens.accessToken, tokens.expiresIn);
 
       reply.send({ success: true });
     } catch {
@@ -338,6 +372,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
       reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
       reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+      reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
       return reply.status(401).send({ error: { code: 'REFRESH_FAILED', message: 'Token refresh failed' } });
     }
   });
@@ -349,6 +384,12 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // (signed session cookie). The app's OIDC client_id must be allowlisted
   // on Identity for the requested `audience` (see Identity's migration 033
   // + 034 + docs/WIDGET_TOKEN_EXCHANGE.md).
+  //
+  // The subject_token is the user's own Identity access token (Identity
+  // #63), read from its cookie. Only when that token is missing or expired
+  // does the route refresh it server-side, writing back the rotated refresh
+  // token; with no usable token after that it answers 401 so the frontend
+  // re-authenticates.
   //
   // Returns a short-lived JWT (5-minute TTL) the frontend can hand to a
   // downstream service (e.g. the Ideas widget). The receiver validates
@@ -380,16 +421,57 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       });
     }
 
+    let subjectToken = usableAccessToken(unsign(request, ACCESS_TOKEN_COOKIE));
+    const subjectRefreshed = !subjectToken;
+    if (!subjectToken) {
+      const refreshTokenValue = unsign(request, REFRESH_TOKEN_COOKIE);
+      if (!refreshTokenValue) {
+        return reply.status(401).send({
+          error: 'unauthorized',
+          error_description: 'access token expired and no refresh token; re-authenticate',
+        });
+      }
+      try {
+        const tokens = await refreshOnce(refreshTokenValue);
+        setAccessTokenCookie(reply, tokens.accessToken, tokens.expiresIn);
+        if (tokens.refreshToken) {
+          reply.setCookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, cookieOpts(7 * 86400));
+        }
+        subjectToken = tokens.accessToken;
+      } catch (err) {
+        const refreshErr = err as Error & { statusCode?: number };
+        // Identity refused the refresh (4xx other than 429): the grant is gone,
+        // so re-auth. 429, 5xx and network failures are retryable: 503.
+        const status = refreshErr.statusCode;
+        if (status && status >= 400 && status < 500 && status !== 429) {
+          request.log.warn(
+            { audience, subjectUserId: session.fortiumUserId, identityStatus: refreshErr.statusCode },
+            'widget-token refresh refused by Identity',
+          );
+          return reply.status(401).send({
+            error: 'unauthorized',
+            error_description: 'access token expired and refresh was refused; re-authenticate',
+          });
+        }
+        request.log.error(
+          { audience, subjectUserId: session.fortiumUserId, identityStatus: status, err: refreshErr.message },
+          'widget-token refresh failed (Identity unavailable)',
+        );
+        return reply.status(503).send({
+          error: 'service_unavailable',
+          error_description: 'identity provider is unavailable',
+        });
+      }
+    }
+
     try {
-      const tokenResponse = await client.requestWidgetToken(
-        session.fortiumUserId,
-        audience,
-      );
+      const tokenResponse = await client.requestWidgetToken(subjectToken, audience);
       const duration = Date.now() - start;
       request.log.info(
         {
           audience,
           subjectUserId: session.fortiumUserId,
+          subjectRefreshed,
           durationMs: duration,
         },
         'widget-token exchange succeeded',
@@ -448,6 +530,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
 
     const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
     reply.send({ success: true, logoutUrl });
@@ -462,6 +545,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
 
     const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
     reply.redirect(logoutUrl);
@@ -475,6 +559,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     reply.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
 
     const identityBase = opts.issuer.replace(/\/oidc$/, '');

@@ -4,4 +4,5 @@ export { createSessionToken, verifySessionToken } from './session.js';
 export type { SessionConfig } from './session.js';
 export { verifyM2MToken } from './m2m.js';
 export { parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, sanitizeReturnTo, } from './pending-states.js';
+export { ACCESS_TOKEN_EXPIRY_SKEW_MS, serializeAccessToken, usableAccessToken, } from './access-token-cookie.js';
 export type { FortiumClaims, OIDCState, TokenResponse, TokenResult, RefreshResult, SessionPayload, M2MTokenPayload, M2MAuthOptions, } from './types.js';

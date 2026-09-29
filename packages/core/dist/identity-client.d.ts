@@ -44,20 +44,22 @@ export declare class IdentityClient {
      * client must be allowlisted on Identity for the requested `audience`
      * via `oidc_clients.allowed_exchange_audiences` (migration 033).
      *
-     * Trust model: `subjectUserId` is the user's Fortium user_id from the
-     * authenticated session. The M2M client (this library, server-side)
-     * vouches that this user is authenticated; Identity verifies the user
-     * exists + is active but does NOT cryptographically verify caller
-     * ownership of the user. See M2M_TOKEN_AUDIENCE.md in Identity repo.
+     * Trust model (Identity #63): the subject is the user's own Identity
+     * access token, issued to this client. Identity resolves it and checks it
+     * is valid, bound to the calling client, and on a live grant, so holding
+     * the client secret alone no longer lets a caller mint a token for any
+     * user. A bare user_id is refused here before any request is made.
      *
-     * @param subjectUserId - Fortium user_id from session
+     * @param subjectAccessToken - The user's Identity access token (from the
+     *   code exchange or a refresh), never a user_id
      * @param audience - Requested audience (must be in client's allowlist)
      * @param timeoutMs - Hard timeout (default 5000ms)
      * @returns Token response from Identity (raw OAuth shape)
-     * @throws Error with `.statusCode` (number) and `.oauthError` (string) on
+     * @throws TypeError if `subjectAccessToken` is a UUID (a user_id);
+     *   Error with `.statusCode` (number) and `.oauthError` (string) on
      *   non-2xx response; or a generic Error on timeout/network failure.
      */
-    requestWidgetToken(subjectUserId: string, audience: string, timeoutMs?: number): Promise<{
+    requestWidgetToken(subjectAccessToken: string, audience: string, timeoutMs?: number): Promise<{
         access_token: string;
         token_type: string;
         expires_in: number;

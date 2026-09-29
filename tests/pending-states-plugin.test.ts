@@ -186,7 +186,7 @@ describe('Fastify /login?returnTo → /callback lands on the requested path', ()
     const claims = { fortium_user_id: USER_ID, email: USER_EMAIL, email_verified: true } as FortiumClaims;
     jest
       .spyOn(IdentityClient.prototype, 'exchangeCode')
-      .mockResolvedValue({ idToken: 'fake.id.token', accessToken: 'fake-access', claims });
+      .mockResolvedValue({ idToken: 'fake.id.token', accessToken: 'fake-access', expiresIn: 3600, claims });
   });
 
   afterEach(async () => {

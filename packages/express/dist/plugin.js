@@ -8,7 +8,7 @@
  * reimplementing the OIDC flow.
  */
 import { Router } from 'express';
-import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, } from '@fortium/identity-client';
+import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, serializeAccessToken, usableAccessToken, } from '@fortium/identity-client';
 // Cookie name helpers
 function cookieName(prefix, name) {
     return prefix ? `${prefix}_${name}` : name;
@@ -20,6 +20,9 @@ export function createIdentityRouter(opts) {
     const AUTH_TOKEN_COOKIE = cookieName(prefix, 'auth_token');
     const ID_TOKEN_COOKIE = cookieName(prefix, 'id_token');
     const REFRESH_TOKEN_COOKIE = cookieName(prefix, 'refresh_token');
+    // Distinct from the `access_token` apps set through extraCookies (Talent):
+    // this one also records the token's expiry, which /widget-token needs.
+    const ACCESS_TOKEN_COOKIE = cookieName(prefix, 'identity_access_token');
     const isProd = process.env.NODE_ENV === 'production';
     const client = new IdentityClient({
         issuer: opts.issuer,
@@ -62,6 +65,26 @@ export function createIdentityRouter(opts) {
         if (!value)
             return null;
         return value;
+    }
+    // Helper: keep the user's access token for /widget-token's subject_token.
+    // The cookie lives exactly as long as the token does.
+    function setAccessTokenCookie(res, accessToken, expiresIn) {
+        res.cookie(ACCESS_TOKEN_COOKIE, serializeAccessToken(accessToken, expiresIn), cookieOpts(expiresIn));
+    }
+    // Helper: concurrent refreshes of one refresh token within THIS process
+    // share a single call. Refresh tokens rotate and Identity revokes the grant
+    // when a used one comes back. The map is process-local: two instances
+    // refreshing the same token still race, so an app running more than one
+    // needs sticky sessions or accepts that risk. The primary mitigation is
+    // refreshing only when the access token has expired (usableAccessToken).
+    const refreshesInFlight = new Map();
+    function refreshOnce(refreshToken) {
+        let pending = refreshesInFlight.get(refreshToken);
+        if (!pending) {
+            pending = client.refreshToken(refreshToken).finally(() => refreshesInFlight.delete(refreshToken));
+            refreshesInFlight.set(refreshToken, pending);
+        }
+        return pending;
     }
     // ------------------------------------------------------------------
     // GET /login — Redirect to Identity for OIDC authentication
@@ -110,6 +133,7 @@ export function createIdentityRouter(opts) {
                 res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
                 res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
                 res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+                res.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
                 return res.redirect(`${opts.frontendUrl}/login?error=state_missing`);
             }
             // Select the pending attempt whose state matches the returned param.
@@ -157,6 +181,7 @@ export function createIdentityRouter(opts) {
             if (refreshToken) {
                 res.cookie(REFRESH_TOKEN_COOKIE, refreshToken, cookieOpts(7 * 86400)); // 7d
             }
+            setAccessTokenCookie(res, tokenResult.accessToken, tokenResult.expiresIn);
             // Set extra cookies if hook provided (e.g., access_token for backend forwarding)
             if (opts.extraCookies) {
                 const extras = opts.extraCookies({ accessToken: tokenResult.accessToken, idToken, refreshToken }, claims);
@@ -198,7 +223,7 @@ export function createIdentityRouter(opts) {
             return res.status(401).json({ error: { code: 'NO_REFRESH_TOKEN', message: 'No refresh token' } });
         }
         try {
-            const tokens = await client.refreshToken(refreshTokenValue);
+            const tokens = await refreshOnce(refreshTokenValue);
             if (tokens.idToken) {
                 const claims = await client.validateIdToken(tokens.idToken);
                 // Rebuild session with authorize hook
@@ -218,6 +243,7 @@ export function createIdentityRouter(opts) {
             if (tokens.refreshToken) {
                 res.cookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, cookieOpts(7 * 86400));
             }
+            setAccessTokenCookie(res, tokens.accessToken, tokens.expiresIn);
             // Set extra cookies on refresh too
             if (opts.extraCookies && tokens.idToken) {
                 const extras = opts.extraCookies({ accessToken: tokens.accessToken, idToken: tokens.idToken, refreshToken: tokens.refreshToken }, await client.validateIdToken(tokens.idToken));
@@ -232,6 +258,7 @@ export function createIdentityRouter(opts) {
             res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
             res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
             res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+            res.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
             return res.status(401).json({ error: { code: 'REFRESH_FAILED', message: 'Token refresh failed' } });
         }
     });
@@ -242,6 +269,12 @@ export function createIdentityRouter(opts) {
     // (signed session cookie). The app's OIDC client_id must be allowlisted
     // on Identity for the requested `audience` (see Identity's migration 033
     // + 034 + docs/WIDGET_TOKEN_EXCHANGE.md).
+    //
+    // The subject_token is the user's own Identity access token (Identity
+    // #63), read from its cookie. Only when that token is missing or expired
+    // does the route refresh it server-side, writing back the rotated refresh
+    // token; with no usable token after that it answers 401 so the frontend
+    // re-authenticates.
     //
     // Returns a short-lived JWT (5-minute TTL) the frontend can hand to a
     // downstream service (e.g. the Ideas widget). The receiver validates
@@ -270,14 +303,65 @@ export function createIdentityRouter(opts) {
                 error_description: 'invalid session',
             });
         }
+        let subjectToken = usableAccessToken(readSignedCookie(req, ACCESS_TOKEN_COOKIE));
+        const subjectRefreshed = !subjectToken;
+        if (!subjectToken) {
+            const refreshTokenValue = readSignedCookie(req, REFRESH_TOKEN_COOKIE);
+            if (!refreshTokenValue) {
+                return res.status(401).json({
+                    error: 'unauthorized',
+                    error_description: 'access token expired and no refresh token; re-authenticate',
+                });
+            }
+            try {
+                const tokens = await refreshOnce(refreshTokenValue);
+                setAccessTokenCookie(res, tokens.accessToken, tokens.expiresIn);
+                if (tokens.refreshToken) {
+                    res.cookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, cookieOpts(7 * 86400));
+                }
+                subjectToken = tokens.accessToken;
+            }
+            catch (err) {
+                const refreshErr = err;
+                // Identity refused the refresh (4xx other than 429): the grant is gone,
+                // so re-auth. 429, 5xx and network failures are retryable: 503.
+                const status = refreshErr.statusCode;
+                if (status && status >= 400 && status < 500 && status !== 429) {
+                    console.log(JSON.stringify({
+                        level: 'warn',
+                        msg: 'widget-token refresh refused by Identity',
+                        audience,
+                        subjectUserId: session.fortiumUserId,
+                        identityStatus: refreshErr.statusCode,
+                    }));
+                    return res.status(401).json({
+                        error: 'unauthorized',
+                        error_description: 'access token expired and refresh was refused; re-authenticate',
+                    });
+                }
+                console.log(JSON.stringify({
+                    level: 'error',
+                    msg: 'widget-token refresh failed (Identity unavailable)',
+                    audience,
+                    subjectUserId: session.fortiumUserId,
+                    identityStatus: status,
+                    err: refreshErr.message,
+                }));
+                return res.status(503).json({
+                    error: 'service_unavailable',
+                    error_description: 'identity provider is unavailable',
+                });
+            }
+        }
         try {
-            const tokenResponse = await client.requestWidgetToken(session.fortiumUserId, audience);
+            const tokenResponse = await client.requestWidgetToken(subjectToken, audience);
             const duration = Date.now() - start;
             console.log(JSON.stringify({
                 level: 'info',
                 msg: 'widget-token exchange succeeded',
                 audience,
                 subjectUserId: session.fortiumUserId,
+                subjectRefreshed,
                 durationMs: duration,
             }));
             return res.json({
@@ -329,6 +413,7 @@ export function createIdentityRouter(opts) {
         res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
         res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
         res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
         const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
         res.json({ success: true, logoutUrl });
     });
@@ -340,6 +425,7 @@ export function createIdentityRouter(opts) {
         res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
         res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
         res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
         const logoutUrl = client.getLogoutUrl(idToken || undefined, postLogoutRedirect);
         res.redirect(logoutUrl);
     });
@@ -351,6 +437,7 @@ export function createIdentityRouter(opts) {
         res.clearCookie(AUTH_TOKEN_COOKIE, clearOpts);
         res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
         res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+        res.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
         res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
         const identityBase = opts.issuer.replace(/\/oidc$/, '');
         const returnTo = `${opts.frontendUrl}/login?switch=1`;
