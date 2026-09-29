@@ -156,9 +156,12 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     reply.setCookie(ACCESS_TOKEN_COOKIE, serializeAccessToken(accessToken, expiresIn), cookieOpts(expiresIn));
   }
 
-  // Helper: concurrent refreshes of one refresh token share a single call.
-  // Refresh tokens rotate and Identity revokes the grant when a used one
-  // comes back, so two tabs refreshing at once would log the user out.
+  // Helper: concurrent refreshes of one refresh token within THIS process
+  // share a single call. Refresh tokens rotate and Identity revokes the grant
+  // when a used one comes back. The map is process-local: two instances
+  // refreshing the same token still race, so an app running more than one
+  // needs sticky sessions or accepts that risk. The primary mitigation is
+  // refreshing only when the access token has expired (usableAccessToken).
   const refreshesInFlight = new Map<string, Promise<RefreshResult>>();
   function refreshOnce(refreshToken: string): Promise<RefreshResult> {
     let pending = refreshesInFlight.get(refreshToken);
@@ -437,8 +440,10 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
         subjectToken = tokens.accessToken;
       } catch (err) {
         const refreshErr = err as Error & { statusCode?: number };
-        // Identity refused the refresh (4xx): the grant is gone, so re-auth.
-        if (refreshErr.statusCode && refreshErr.statusCode >= 400 && refreshErr.statusCode < 500) {
+        // Identity refused the refresh (4xx other than 429): the grant is gone,
+        // so re-auth. 429, 5xx and network failures are retryable: 503.
+        const status = refreshErr.statusCode;
+        if (status && status >= 400 && status < 500 && status !== 429) {
           request.log.warn(
             { audience, subjectUserId: session.fortiumUserId, identityStatus: refreshErr.statusCode },
             'widget-token refresh refused by Identity',
@@ -449,8 +454,8 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
           });
         }
         request.log.error(
-          { audience, subjectUserId: session.fortiumUserId, err: refreshErr.message },
-          'widget-token refresh failed (Identity unreachable)',
+          { audience, subjectUserId: session.fortiumUserId, identityStatus: status, err: refreshErr.message },
+          'widget-token refresh failed (Identity unavailable)',
         );
         return reply.status(503).send({
           error: 'service_unavailable',

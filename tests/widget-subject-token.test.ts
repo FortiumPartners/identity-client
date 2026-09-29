@@ -15,7 +15,8 @@ import cookieParser from 'cookie-parser';
  * other auth cookies' options; the widget route using a live token without
  * refreshing; refreshing exactly once when the token is expired or missing
  * and writing back the rotated refresh token; 401 when no usable token can
- * be had; and concurrent refreshes of one refresh token sharing one call.
+ * be had; and concurrent refreshes of one refresh token sharing one call
+ * within a single process (the only scope the in-memory coalescing covers).
  *
  * The same suite runs against the Fastify plugin (app.inject) and the Express
  * router (a real listener on an ephemeral port, driven with the unmocked
@@ -372,6 +373,26 @@ describe.each(HARNESSES)('%s plugin: access token as the widget subject', (_name
     expect(callsTo(fetchMock).map((b) => b.get('grant_type'))).toEqual(['refresh_token']);
   });
 
+  it('refresh rate-limited by Identity (429) → retryable 503, not a re-login', async () => {
+    const fetchMock = mockIdentity({
+      refresh: { status: 429, body: { error: 'too_many_requests' } },
+    });
+
+    const res = await widget({ refresh_token: h.sign(REFRESH_TOKEN) });
+
+    expect(res.status).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({ error: 'service_unavailable' });
+    expect(callsTo(fetchMock).map((b) => b.get('grant_type'))).toEqual(['refresh_token']);
+  });
+
+  it('refresh hits an Identity 5xx → retryable 503', async () => {
+    mockIdentity({ refresh: { status: 502, body: { error: 'bad_gateway' } } });
+
+    const res = await widget({ refresh_token: h.sign(REFRESH_TOKEN) });
+
+    expect(res.status).toBe(503);
+  });
+
   it('refresh cannot reach Identity → 503, no exchange', async () => {
     const fetchMock = mockIdentity({ refresh: new TypeError('fetch failed') });
 
@@ -382,7 +403,7 @@ describe.each(HARNESSES)('%s plugin: access token as the widget subject', (_name
     expect(callsTo(fetchMock).map((b) => b.get('grant_type'))).toEqual(['refresh_token']);
   });
 
-  it('two concurrent requests with the same expired token share ONE refresh (a second use would revoke the grant)', async () => {
+  it('two concurrent requests to ONE instance with the same expired token share one refresh', async () => {
     const fetchMock = mockIdentity({ refreshDelayMs: 100 });
     const cookies = {
       identity_access_token: accessCookie(EXPIRED_TOKEN, 3600, Date.now() - 2 * 3600_000),

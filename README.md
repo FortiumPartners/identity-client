@@ -134,9 +134,9 @@ Cookie: auth_token=<signed session>
 
 Requires Identity-side admin configuration on the calling app's `oidc_clients` row: `urn:ietf:params:oauth:grant-type:token-exchange` in `grant_types` AND the requested audience listed in `allowed_exchange_audiences`. See Identity repo's `docs/WIDGET_TOKEN_EXCHANGE.md` for the full contract.
 
-The exchange's `subject_token` is the user's own Identity access token (since 1.4.0, Identity #63), read from the `identity_access_token` cookie. The route refreshes server-side only when that token is missing or expired, and writes back the rotated refresh token.
+The exchange's `subject_token` is the user's own Identity access token (since 1.4.0, Identity #63), read from the `identity_access_token` cookie. The route refreshes server-side only when that token is missing or expired, and writes back the rotated refresh token. Concurrent refreshes of one refresh token share a single call within one process only; an app running more than one instance needs sticky sessions, or accepts that two instances refreshing at once can revoke the grant.
 
-Errors are forwarded as OAuth-compliant JSON (`{ error, error_description }`): `400 invalid_target` if the audience isn't allowlisted, `401` if no/invalid session or no usable access token after a refresh attempt (re-authenticate), `503 service_unavailable` if Identity is unreachable.
+Errors are forwarded as OAuth-compliant JSON (`{ error, error_description }`): `400 invalid_target` if the audience isn't allowlisted, `401` if no/invalid session or no usable access token after a refresh attempt (re-authenticate), `503 service_unavailable` if Identity is unreachable or the refresh got a `429` or `5xx`.
 
 ## Cookies
 
