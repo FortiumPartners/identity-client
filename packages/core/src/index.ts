@@ -16,6 +16,7 @@ export {
   serializeAccessToken,
   usableAccessToken,
 } from './access-token-cookie.js';
+export type { StoredAccessToken } from './access-token-cookie.js';
 export type {
   FortiumClaims,
   OIDCState,

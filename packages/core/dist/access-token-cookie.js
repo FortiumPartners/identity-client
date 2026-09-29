@@ -2,22 +2,30 @@
  * The user's Identity access token, kept in a signed httpOnly cookie so the
  * widget-token route can present it as the RFC 8693 subject_token (Identity #63).
  *
- * Identity's user access tokens are opaque, so their expiry cannot be read
- * off the token. The cookie stores it alongside: {"t": token, "exp": epoch ms}.
+ * Identity's user access tokens are opaque, so neither their expiry nor their
+ * user can be read off the token. The cookie stores both alongside:
+ * {"t": token, "exp": epoch ms, "sub": fortium_user_id}. The route compares
+ * `sub` with the session user before using the token (#18).
  */
 /** Treat the token as expired this long before it is, so the exchange never races its end. */
 export const ACCESS_TOKEN_EXPIRY_SKEW_MS = 30_000;
-/** Serialize an access token and its lifetime (seconds, the token response's expires_in). */
-export function serializeAccessToken(accessToken, expiresIn, now = Date.now()) {
-    return JSON.stringify({ t: accessToken, exp: now + expiresIn * 1000 });
+/**
+ * Serialize an access token, its lifetime (seconds, the token response's
+ * expires_in) and the fortium_user_id of the user it was issued to.
+ */
+export function serializeAccessToken(accessToken, expiresIn, sub, now = Date.now()) {
+    return JSON.stringify({ t: accessToken, exp: now + expiresIn * 1000, sub });
 }
 /**
- * The stored access token if it is still usable, else null.
+ * The stored access token and its user if the token is still usable, else null.
  *
  * Null is the only thing that should send a caller to a refresh. Refresh
  * tokens rotate and Identity revokes the whole grant when a used one comes
  * back, so refreshing while this still returns a token invites a race
  * between tabs that logs the user out.
+ *
+ * A cookie without `sub` (written by 1.4.0) is null: its user is unknown, so
+ * it is never trusted and the caller refreshes, which proves the user again.
  */
 export function usableAccessToken(raw, now = Date.now()) {
     if (!raw)
@@ -29,10 +37,12 @@ export function usableAccessToken(raw, now = Date.now()) {
     catch {
         return null;
     }
-    const { t, exp } = (parsed ?? {});
+    const { t, exp, sub } = (parsed ?? {});
     if (typeof t !== 'string' || !t || typeof exp !== 'number')
+        return null;
+    if (typeof sub !== 'string' || !sub)
         return null;
     if (exp - ACCESS_TOKEN_EXPIRY_SKEW_MS <= now)
         return null;
-    return t;
+    return { token: t, sub };
 }

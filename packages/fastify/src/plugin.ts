@@ -150,10 +150,11 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     return unsigned.value;
   }
 
-  // Helper: keep the user's access token for /widget-token's subject_token.
-  // The cookie lives exactly as long as the token does.
-  function setAccessTokenCookie(reply: FastifyReply, accessToken: string, expiresIn: number) {
-    reply.setCookie(ACCESS_TOKEN_COOKIE, serializeAccessToken(accessToken, expiresIn), cookieOpts(expiresIn));
+  // Helper: keep the user's access token for /widget-token's subject_token,
+  // with the fortium_user_id it was issued to (`sub`), taken from a validated
+  // ID token. The cookie lives exactly as long as the token does.
+  function setAccessTokenCookie(reply: FastifyReply, accessToken: string, expiresIn: number, sub: string) {
+    reply.setCookie(ACCESS_TOKEN_COOKIE, serializeAccessToken(accessToken, expiresIn, sub), cookieOpts(expiresIn));
   }
 
   // Helper: concurrent refreshes of one refresh token within THIS process
@@ -170,6 +171,95 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       refreshesInFlight.set(refreshToken, pending);
     }
     return pending;
+  }
+
+  // Helper: drop the tokens /widget-token proves the user with. Used when
+  // they belong to someone other than the session user, or Identity refused them.
+  function clearSubjectCookies(reply: FastifyReply) {
+    reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
+    reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
+  }
+
+  // Helper: refresh the widget subject server-side, and accept the result
+  // only when its validated ID token names the session user. Returns the new
+  // access token, or the error response for the route to send.
+  async function refreshSubject(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    session: SessionPayload,
+    audience: string,
+  ): Promise<{ token: string } | { status: number; body: { error: string; error_description: string } }> {
+    const refreshTokenValue = unsign(request, REFRESH_TOKEN_COOKIE);
+    if (!refreshTokenValue) {
+      return {
+        status: 401,
+        body: { error: 'unauthorized', error_description: 'no usable access token and no refresh token; re-authenticate' },
+      };
+    }
+
+    let tokens: RefreshResult;
+    try {
+      tokens = await refreshOnce(refreshTokenValue);
+    } catch (err) {
+      const refreshErr = err as Error & { statusCode?: number };
+      // Identity refused the refresh (4xx other than 429): the grant is gone,
+      // so re-auth. 429, 5xx and network failures are retryable: 503.
+      const status = refreshErr.statusCode;
+      if (status && status >= 400 && status < 500 && status !== 429) {
+        request.log.warn(
+          { audience, subjectUserId: session.fortiumUserId, identityStatus: refreshErr.statusCode },
+          'widget-token refresh refused by Identity',
+        );
+        return {
+          status: 401,
+          body: { error: 'unauthorized', error_description: 'access token refresh was refused; re-authenticate' },
+        };
+      }
+      request.log.error(
+        { audience, subjectUserId: session.fortiumUserId, identityStatus: status, err: refreshErr.message },
+        'widget-token refresh failed (Identity unavailable)',
+      );
+      return {
+        status: 503,
+        body: { error: 'service_unavailable', error_description: 'identity provider is unavailable' },
+      };
+    }
+
+    // The refresh token cookie is not tied to the session cookie: an app
+    // route that sets only auth_token can leave an earlier user's in place.
+    // Bind the result to the session user through its validated ID token.
+    let refreshedUserId: string | undefined;
+    let validationError: string | undefined;
+    if (tokens.idToken) {
+      try {
+        refreshedUserId = (await client.validateIdToken(tokens.idToken)).fortium_user_id;
+      } catch (err) {
+        validationError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (!refreshedUserId || refreshedUserId !== session.fortiumUserId) {
+      request.log.warn(
+        {
+          audience,
+          subjectUserId: session.fortiumUserId,
+          refreshedUserId,
+          hasIdToken: !!tokens.idToken,
+          err: validationError,
+        },
+        'widget-token refresh did not prove the session user',
+      );
+      clearSubjectCookies(reply);
+      return {
+        status: 401,
+        body: { error: 'unauthorized', error_description: 'refreshed token does not belong to the session user; re-authenticate' },
+      };
+    }
+
+    setAccessTokenCookie(reply, tokens.accessToken, tokens.expiresIn, refreshedUserId);
+    if (tokens.refreshToken) {
+      reply.setCookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, cookieOpts(7 * 86400));
+    }
+    return { token: tokens.accessToken };
   }
 
   // ------------------------------------------------------------------
@@ -295,8 +385,11 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
 
       if (refreshToken) {
         reply.setCookie(REFRESH_TOKEN_COOKIE, refreshToken, cookieOpts(7 * 86400)); // 7d
+      } else {
+        // An earlier user's refresh token must not survive this login.
+        reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
       }
-      setAccessTokenCookie(reply, accessToken, expiresIn);
+      setAccessTokenCookie(reply, accessToken, expiresIn, claims.fortium_user_id);
 
       // Land on this attempt's returnTo (validated at /login, carried in the
       // signed state cookie) or the registration-time default.
@@ -359,12 +452,15 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
 
         reply.setCookie(AUTH_TOKEN_COOKIE, sessionToken, cookieOpts(86400));
         reply.setCookie(ID_TOKEN_COOKIE, tokens.idToken, cookieOpts(86400));
+        setAccessTokenCookie(reply, tokens.accessToken, tokens.expiresIn, claims.fortium_user_id);
+      } else {
+        // No ID token, so no proven user to bind the access token to.
+        reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
       }
 
       if (tokens.refreshToken) {
         reply.setCookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, cookieOpts(7 * 86400));
       }
-      setAccessTokenCookie(reply, tokens.accessToken, tokens.expiresIn);
 
       reply.send({ success: true });
     } catch {
@@ -386,10 +482,13 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // + 034 + docs/WIDGET_TOKEN_EXCHANGE.md).
   //
   // The subject_token is the user's own Identity access token (Identity
-  // #63), read from its cookie. Only when that token is missing or expired
-  // does the route refresh it server-side, writing back the rotated refresh
-  // token; with no usable token after that it answers 401 so the frontend
-  // re-authenticates.
+  // #63), read from its cookie. The cookie records the user the token was
+  // issued to, and a token issued to anyone but the session user is refused
+  // with 401 (#18). Only when that token is missing or expired does the route
+  // refresh it server-side, writing back the rotated refresh token; with no
+  // usable token after that it answers 401 so the frontend re-authenticates.
+  // A token Identity refuses as invalid_grant (revoked before it expired) is
+  // dropped and refreshed once.
   //
   // Returns a short-lived JWT (5-minute TTL) the frontend can hand to a
   // downstream service (e.g. the Ideas widget). The receiver validates
@@ -421,51 +520,45 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       });
     }
 
-    let subjectToken = usableAccessToken(unsign(request, ACCESS_TOKEN_COOKIE));
-    const subjectRefreshed = !subjectToken;
+    const stored = usableAccessToken(unsign(request, ACCESS_TOKEN_COOKIE));
+    if (stored && stored.sub !== session.fortiumUserId) {
+      request.log.warn(
+        { audience, subjectUserId: session.fortiumUserId, storedUserId: stored.sub },
+        'widget-token access token belongs to another user',
+      );
+      clearSubjectCookies(reply);
+      return reply.status(401).send({
+        error: 'unauthorized',
+        error_description: 'stored access token does not belong to the session user; re-authenticate',
+      });
+    }
+
+    let subjectToken = stored?.token;
+    let subjectRefreshed = false;
     if (!subjectToken) {
-      const refreshTokenValue = unsign(request, REFRESH_TOKEN_COOKIE);
-      if (!refreshTokenValue) {
-        return reply.status(401).send({
-          error: 'unauthorized',
-          error_description: 'access token expired and no refresh token; re-authenticate',
-        });
-      }
-      try {
-        const tokens = await refreshOnce(refreshTokenValue);
-        setAccessTokenCookie(reply, tokens.accessToken, tokens.expiresIn);
-        if (tokens.refreshToken) {
-          reply.setCookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, cookieOpts(7 * 86400));
-        }
-        subjectToken = tokens.accessToken;
-      } catch (err) {
-        const refreshErr = err as Error & { statusCode?: number };
-        // Identity refused the refresh (4xx other than 429): the grant is gone,
-        // so re-auth. 429, 5xx and network failures are retryable: 503.
-        const status = refreshErr.statusCode;
-        if (status && status >= 400 && status < 500 && status !== 429) {
-          request.log.warn(
-            { audience, subjectUserId: session.fortiumUserId, identityStatus: refreshErr.statusCode },
-            'widget-token refresh refused by Identity',
-          );
-          return reply.status(401).send({
-            error: 'unauthorized',
-            error_description: 'access token expired and refresh was refused; re-authenticate',
-          });
-        }
-        request.log.error(
-          { audience, subjectUserId: session.fortiumUserId, identityStatus: status, err: refreshErr.message },
-          'widget-token refresh failed (Identity unavailable)',
-        );
-        return reply.status(503).send({
-          error: 'service_unavailable',
-          error_description: 'identity provider is unavailable',
-        });
-      }
+      const refreshed = await refreshSubject(request, reply, session, audience);
+      if (!('token' in refreshed)) return reply.status(refreshed.status).send(refreshed.body);
+      subjectToken = refreshed.token;
+      subjectRefreshed = true;
     }
 
     try {
-      const tokenResponse = await client.requestWidgetToken(subjectToken, audience);
+      let tokenResponse: Awaited<ReturnType<IdentityClient['requestWidgetToken']>>;
+      try {
+        tokenResponse = await client.requestWidgetToken(subjectToken, audience);
+      } catch (err) {
+        // invalid_grant: Identity no longer accepts a token that has not
+        // expired (its grant was revoked). Drop it and refresh once.
+        if ((err as { oauthError?: string }).oauthError !== 'invalid_grant' || subjectRefreshed) throw err;
+        const refreshed = await refreshSubject(request, reply, session, audience);
+        if (!('token' in refreshed)) {
+          reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
+          return reply.status(refreshed.status).send(refreshed.body);
+        }
+        subjectToken = refreshed.token;
+        subjectRefreshed = true;
+        tokenResponse = await client.requestWidgetToken(subjectToken, audience);
+      }
       const duration = Date.now() - start;
       request.log.info(
         {
@@ -485,6 +578,19 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     } catch (err) {
       const duration = Date.now() - start;
       const oauthErr = err as Error & { statusCode?: number; oauthError?: string };
+
+      // invalid_grant on a token refreshed in this request: re-authenticate.
+      if (oauthErr.oauthError === 'invalid_grant') {
+        request.log.warn(
+          { audience, subjectUserId: session.fortiumUserId, durationMs: duration, oauthError: oauthErr.oauthError },
+          'widget-token exchange refused a freshly refreshed token',
+        );
+        reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
+        return reply.status(401).send({
+          error: 'unauthorized',
+          error_description: 'access token was refused; re-authenticate',
+        });
+      }
 
       // Identity-returned 4xx — forward the OAuth error code verbatim
       if (oauthErr.statusCode && oauthErr.statusCode >= 400 && oauthErr.statusCode < 500) {

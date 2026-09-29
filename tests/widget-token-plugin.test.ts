@@ -69,7 +69,7 @@ async function makeSessionCookie(app: FastifyInstance): Promise<string> {
 
 // The user's live access token, as /auth/callback stores it (1.4.0, Identity #63).
 function makeAccessTokenCookie(app: FastifyInstance): string {
-  return app.signCookie(serializeAccessToken(ACCESS_TOKEN, 3600));
+  return app.signCookie(serializeAccessToken(ACCESS_TOKEN, 3600, USER_ID));
 }
 
 function mockFetchResolved({
