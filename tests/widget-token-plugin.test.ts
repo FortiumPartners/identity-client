@@ -11,17 +11,14 @@ import fastifyCookie from '@fastify/cookie';
  * is configured with — the same shape a real /auth/callback would have
  * produced.
  *
- * Express has no comparable inject() helper without adding supertest;
- * its route logic is byte-equivalent to the Fastify one (mirror-image
- * code at packages/express/src/plugin.ts:367-456 vs
- * packages/fastify/src/plugin.ts:311-410), and the IdentityClient call
- * is covered by tests/widget-token-core.test.ts. So Express coverage is
- * the union of (a) the core test + (b) the Fastify route test of the
- * same exchange logic.
+ * The access-token subject, its refresh, and the Express router are
+ * covered in tests/widget-subject-token.test.ts, which runs against both
+ * plugins.
  */
 
 import { identityPlugin } from '../packages/fastify/src/plugin.js';
 import { createSessionToken } from '../packages/core/src/session.js';
+import { serializeAccessToken } from '../packages/core/src/access-token-cookie.js';
 
 const ISSUER = 'https://identity.example.com';
 const CLIENT_ID = 'gateway';
@@ -31,6 +28,7 @@ const COOKIE_SECRET = 'plugin-test-cookie-secret-not-real';
 const SESSION_ISSUER = 'gateway';
 const USER_ID = '44a62931-8f59-416d-a482-058ee3e3ab86';
 const USER_EMAIL = 'burke@fortium.test';
+const ACCESS_TOKEN = 'o2m5Vq8xLr3TnK1bWcYd7EhJf0AsGpZuQiXe4MvNt9k';
 
 const realFetch = global.fetch;
 
@@ -67,6 +65,11 @@ async function makeSessionCookie(app: FastifyInstance): Promise<string> {
     },
   );
   return app.signCookie(token);
+}
+
+// The user's live access token, as /auth/callback stores it (1.4.0, Identity #63).
+function makeAccessTokenCookie(app: FastifyInstance): string {
+  return app.signCookie(serializeAccessToken(ACCESS_TOKEN, 3600));
 }
 
 function mockFetchResolved({
@@ -151,7 +154,7 @@ describe('Fastify /auth/widget-token route', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/auth/widget-token?audience=ideas-api',
-      cookies: { auth_token: sessionCookie },
+      cookies: { auth_token: sessionCookie, identity_access_token: makeAccessTokenCookie(app) },
     });
 
     expect(res.statusCode).toBe(200);
@@ -172,7 +175,8 @@ describe('Fastify /auth/widget-token route', () => {
     expect(url.toString()).toBe(`${ISSUER}/oidc/token`);
     const reqBody = new URLSearchParams((init as RequestInit).body as string);
     expect(reqBody.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:token-exchange');
-    expect(reqBody.get('subject_token')).toBe(USER_ID);
+    expect(reqBody.get('subject_token')).toBe(ACCESS_TOKEN);
+    expect(reqBody.get('subject_token')).not.toBe(USER_ID);
     expect(reqBody.get('audience')).toBe('ideas-api');
   });
 
@@ -189,7 +193,7 @@ describe('Fastify /auth/widget-token route', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/auth/widget-token?audience=random-api',
-      cookies: { auth_token: sessionCookie },
+      cookies: { auth_token: sessionCookie, identity_access_token: makeAccessTokenCookie(app) },
     });
 
     expect(res.statusCode).toBe(400);
@@ -208,7 +212,7 @@ describe('Fastify /auth/widget-token route', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/auth/widget-token?audience=ideas-api',
-      cookies: { auth_token: sessionCookie },
+      cookies: { auth_token: sessionCookie, identity_access_token: makeAccessTokenCookie(app) },
     });
 
     expect(res.statusCode).toBe(503);
@@ -224,7 +228,7 @@ describe('Fastify /auth/widget-token route', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/auth/widget-token?audience=ideas-api',
-      cookies: { auth_token: sessionCookie },
+      cookies: { auth_token: sessionCookie, identity_access_token: makeAccessTokenCookie(app) },
     });
 
     // The core method throws with statusCode=500; the plugin maps anything

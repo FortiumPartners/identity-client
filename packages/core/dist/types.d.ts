@@ -52,6 +52,8 @@ export interface TokenResponse {
 export interface TokenResult {
     idToken: string;
     accessToken: string;
+    /** Access token lifetime in seconds, from the token response's expires_in. */
+    expiresIn: number;
     refreshToken?: string;
     claims: FortiumClaims;
 }
@@ -61,6 +63,8 @@ export interface TokenResult {
 export interface RefreshResult {
     idToken?: string;
     accessToken: string;
+    /** Access token lifetime in seconds, from the token response's expires_in. */
+    expiresIn: number;
     refreshToken?: string;
 }
 /**

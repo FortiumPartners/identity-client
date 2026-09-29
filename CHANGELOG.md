@@ -4,6 +4,29 @@ All notable changes to `@fortium/identity-client`, `@fortium/identity-client/exp
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] — 2026-09-29
+
+Core, Express and Fastify all move to 1.4.0.
+
+### Changed
+
+- **`/widget-token` proves the user with their own access token.** The RFC 8693 exchange used to send the session's user_id as `subject_token`, so anyone holding the app's client secret could mint a token for any user (Identity #63). Both plugins now send the user's Identity access token instead, with the same `subject_token_type` URN. The route's request and response shapes are unchanged. Identity accepts both subjects during a transition and enforces the real token per client once each app has migrated.
+- **`IdentityClient.requestWidgetToken(subjectAccessToken, audience, timeoutMs?)`.** The first argument is now the user's access token. A UUID there (the old user_id argument) throws a `TypeError` before any request is made. No deprecated user_id path is kept: the plugins were its only callers.
+- **`TokenResult` and `RefreshResult` carry `expiresIn`**, the access token lifetime in seconds from the token response.
+- **`refreshToken()` errors carry `statusCode`** when Identity answered, so a refused refresh can be told apart from an unreachable Identity.
+
+### Added
+
+- **A new `identity_access_token` cookie** (with `cookiePrefix` applied), signed and httpOnly, with the same options as the other auth cookies. `/callback` and `/refresh` set it, with a max age of the token's `expires_in`. It holds the token and its expiry, since Identity's access tokens are opaque. Logout, switch-account, a failed `/refresh` and a missing state cookie all clear it.
+- **`/widget-token` refreshes only when it has to.** A live token is exchanged as-is. When the token is missing or expired (30 s early), the route refreshes once server-side and writes back both the new access token and the rotated refresh token. With no refresh token, or when Identity refuses the refresh, it answers `401` so the frontend re-authenticates. An unreachable Identity gets `503`.
+- **Concurrent refreshes of one refresh token share a single call**, in `/widget-token` and `/refresh` on both plugins. Refresh tokens rotate, and Identity revokes the whole grant when a used one comes back, so two tabs refreshing at once would otherwise log the user out.
+- `serializeAccessToken`, `usableAccessToken` and `ACCESS_TOKEN_EXPIRY_SKEW_MS` in core.
+
+### Upgrading
+
+- Users who logged in before the upgrade have no `identity_access_token` cookie yet. Their first widget request refreshes once to get one.
+- **Express apps that set an `access_token` cookie through `extraCookies` (Talent) need no change.** The plugin uses its own distinct cookie name, so `access_token` keeps whatever value and lifetime the app gives it. An app can drop that extra cookie if it kept it only for the widget.
+
 ## [1.3.1] — 2026-09-23
 
 ### Fixed
