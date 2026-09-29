@@ -44,6 +44,7 @@ const COOKIE_SECRET = 'plugin-test-cookie-secret-not-real';
 const SESSION_ISSUER = 'gateway';
 const USER_ID = '44a62931-8f59-416d-a482-058ee3e3ab86';
 const USER_EMAIL = 'burke@fortium.test';
+const OTHER_USER_ID = '9b1d2c3e-4f50-4a6b-8c7d-0e1f2a3b4c5d';
 
 const LIVE_TOKEN = 'o2m5Vq8xLr3TnK1bWcYd7EhJf0AsGpZuQiXe4MvNt9k';
 const EXPIRED_TOKEN = 'xExpiredxLr3TnK1bWcYd7EhJf0AsGpZuQiXe4MvNt9';
@@ -159,9 +160,13 @@ async function expressHarness(): Promise<Harness> {
   };
 }
 
-/** The Set-Cookie line for `name`, split into its value and lower-cased attributes. */
+/**
+ * The Set-Cookie line for `name`, split into its value and lower-cased
+ * attributes. The last line wins, as in a browser: Express emits one line
+ * per set or clear of the same cookie.
+ */
 function findSetCookie(res: HarnessResponse, name: string): { value: string; attrs: Record<string, string> } | undefined {
-  const line = res.setCookies.find((c) => c.startsWith(`${name}=`));
+  const line = res.setCookies.filter((c) => c.startsWith(`${name}=`)).pop();
   if (!line) return undefined;
   const [pair, ...rest] = line.split(';').map((p) => p.trim());
   const attrs: Record<string, string> = {};
@@ -174,18 +179,23 @@ function findSetCookie(res: HarnessResponse, name: string): { value: string; att
 
 type TokenReply = { status?: number; body: Record<string, unknown> } | Error;
 
+const INVALID_GRANT: TokenReply = { status: 400, body: { error: 'invalid_grant', error_description: 'subject token is invalid' } };
+
 /**
  * Mock Identity's /oidc/token, answering by grant_type. `refreshDelayMs`
- * holds the refresh response so concurrent requests overlap.
+ * holds the refresh response so concurrent requests overlap. An `exchange`
+ * array answers successive exchanges in order.
  */
 function mockIdentity({
   refresh = { body: { access_token: REFRESHED_TOKEN, refresh_token: ROTATED_REFRESH_TOKEN, id_token: 'fake.id.token', token_type: 'Bearer', expires_in: 900 } },
   exchange = { body: { access_token: 'minted.widget.jwt', token_type: 'Bearer', expires_in: 300 } },
   refreshDelayMs = 0,
-}: { refresh?: TokenReply; exchange?: TokenReply; refreshDelayMs?: number } = {}) {
+}: { refresh?: TokenReply; exchange?: TokenReply | TokenReply[]; refreshDelayMs?: number } = {}) {
+  const exchanges = Array.isArray(exchange) ? [...exchange] : null;
   const fetchMock = jest.fn<typeof fetch>(async (_url, init) => {
     const grant = new URLSearchParams((init as RequestInit).body as string).get('grant_type');
-    const reply = grant === 'refresh_token' ? refresh : exchange;
+    const reply =
+      grant === 'refresh_token' ? refresh : exchanges ? (exchanges.shift() as TokenReply) : (exchange as TokenReply);
     if (grant === 'refresh_token' && refreshDelayMs) {
       await new Promise((r) => setTimeout(r, refreshDelayMs));
     }
@@ -217,6 +227,10 @@ describe.each(HARNESSES)('%s plugin: access token as the widget subject', (_name
 
   beforeEach(async () => {
     h = await build();
+    // Refreshed ID tokens name the session user unless a test says otherwise.
+    jest
+      .spyOn(IdentityClient.prototype, 'validateIdToken')
+      .mockResolvedValue({ fortium_user_id: USER_ID, email: USER_EMAIL, email_verified: true } as FortiumClaims);
     sessionCookie = h.sign(
       await createSessionToken(
         { fortiumUserId: USER_ID, email: USER_EMAIL },
@@ -231,8 +245,8 @@ describe.each(HARNESSES)('%s plugin: access token as the widget subject', (_name
     jest.restoreAllMocks();
   });
 
-  const accessCookie = (token: string, expiresIn: number, issuedAt = Date.now()) =>
-    h.sign(serializeAccessToken(token, expiresIn, issuedAt));
+  const accessCookie = (token: string, expiresIn: number, issuedAt = Date.now(), sub = USER_ID) =>
+    h.sign(serializeAccessToken(token, expiresIn, sub, issuedAt));
 
   function widget(cookies: Record<string, string>) {
     return h.request('GET', '/auth/widget-token?audience=ideas-api', { auth_token: sessionCookie, ...cookies });
@@ -267,6 +281,7 @@ describe.each(HARNESSES)('%s plugin: access token as the widget subject', (_name
 
     const stored = JSON.parse(h.unsign(access!.value) as string);
     expect(stored.t).toBe(LIVE_TOKEN);
+    expect(stored.sub).toBe(USER_ID);
     expect(stored.exp).toBeGreaterThanOrEqual(before + 3600_000);
     expect(stored.exp).toBeLessThanOrEqual(Date.now() + 3600_000);
   });
@@ -418,6 +433,187 @@ describe.each(HARNESSES)('%s plugin: access token as the widget subject', (_name
     expect(grants.filter((g) => g === 'urn:ietf:params:oauth:grant-type:token-exchange')).toHaveLength(2);
   });
 
+  // ---- #18: the subject is bound to the session user ----
+
+  it('access token cookie from user A with the session as user B → 401, tokens cleared, Identity never called', async () => {
+    const fetchMock = mockIdentity();
+
+    const res = await widget({
+      identity_access_token: accessCookie(LIVE_TOKEN, 3600, Date.now(), OTHER_USER_ID),
+      refresh_token: h.sign(REFRESH_TOKEN),
+    });
+
+    expect(res.status).toBe(401);
+    expect(JSON.parse(res.body)).toMatchObject({ error: 'unauthorized' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(findSetCookie(res, 'identity_access_token')!.value).toBe('');
+    expect(findSetCookie(res, 'refresh_token')!.value).toBe('');
+  });
+
+  it('refresh that returns a different user → 401, nothing stored, no exchange', async () => {
+    const validate = jest
+      .spyOn(IdentityClient.prototype, 'validateIdToken')
+      .mockResolvedValue({ fortium_user_id: OTHER_USER_ID, email: 'other@fortium.test', email_verified: true } as FortiumClaims);
+    const fetchMock = mockIdentity();
+
+    const res = await widget({ refresh_token: h.sign(REFRESH_TOKEN) });
+
+    expect(res.status).toBe(401);
+    expect(JSON.parse(res.body)).toMatchObject({ error: 'unauthorized' });
+    expect(validate).toHaveBeenCalledWith('fake.id.token');
+    expect(callsTo(fetchMock).map((b) => b.get('grant_type'))).toEqual(['refresh_token']);
+    expect(findSetCookie(res, 'identity_access_token')!.value).toBe('');
+    expect(findSetCookie(res, 'refresh_token')!.value).toBe('');
+  });
+
+  it('refresh whose ID token is missing or fails validation → 401, no exchange', async () => {
+    const noIdToken = mockIdentity({
+      refresh: { body: { access_token: REFRESHED_TOKEN, refresh_token: ROTATED_REFRESH_TOKEN, token_type: 'Bearer', expires_in: 900 } },
+    });
+    const missing = await widget({ refresh_token: h.sign(REFRESH_TOKEN) });
+    expect(missing.status).toBe(401);
+    expect(callsTo(noIdToken).map((b) => b.get('grant_type'))).toEqual(['refresh_token']);
+
+    jest.spyOn(IdentityClient.prototype, 'validateIdToken').mockRejectedValue(new Error('signature verification failed'));
+    const badSig = mockIdentity();
+    const invalid = await widget({ refresh_token: h.sign(REFRESH_TOKEN) });
+    expect(invalid.status).toBe(401);
+    expect(callsTo(badSig).map((b) => b.get('grant_type'))).toEqual(['refresh_token']);
+  });
+
+  it('/callback with no refresh token clears the earlier refresh token cookie', async () => {
+    const claims = { fortium_user_id: USER_ID, email: USER_EMAIL, email_verified: true } as FortiumClaims;
+    jest
+      .spyOn(IdentityClient.prototype, 'exchangeCode')
+      .mockResolvedValue({ idToken: 'fake.id.token', accessToken: LIVE_TOKEN, expiresIn: 3600, claims });
+
+    const login = await h.request('GET', '/auth/login');
+    const state = new URL(login.location as string).searchParams.get('state') as string;
+    const oidcState = findSetCookie(login, 'oidc_state')!.value;
+
+    const res = await h.request('GET', `/auth/callback?code=authcode&state=${encodeURIComponent(state)}`, {
+      oidc_state: oidcState,
+      refresh_token: h.sign('earlier-users-refresh-token'),
+    });
+
+    expect(res.status).toBe(302);
+    expect(findSetCookie(res, 'refresh_token')!.value).toBe('');
+  });
+
+  it('/refresh with no ID token clears the access token cookie instead of storing an unbound one', async () => {
+    mockIdentity({
+      refresh: { body: { access_token: REFRESHED_TOKEN, refresh_token: ROTATED_REFRESH_TOKEN, token_type: 'Bearer', expires_in: 900 } },
+    });
+
+    const res = await h.request('POST', '/auth/refresh', { refresh_token: h.sign(REFRESH_TOKEN) });
+
+    expect(res.status).toBe(200);
+    expect(findSetCookie(res, 'identity_access_token')!.value).toBe('');
+  });
+
+  it('live 1.4.0 cookie without sub → never used: one refresh, validated, then exchange; new cookie carries sub', async () => {
+    const validate = jest.spyOn(IdentityClient.prototype, 'validateIdToken');
+    const fetchMock = mockIdentity();
+    const legacy = h.sign(JSON.stringify({ t: LIVE_TOKEN, exp: Date.now() + 3600_000 }));
+
+    const res = await widget({ identity_access_token: legacy, refresh_token: h.sign(REFRESH_TOKEN) });
+
+    expect(res.status).toBe(200);
+    const calls = callsTo(fetchMock);
+    expect(calls.map((b) => b.get('grant_type'))).toEqual([
+      'refresh_token',
+      'urn:ietf:params:oauth:grant-type:token-exchange',
+    ]);
+    expect(calls[1].get('subject_token')).toBe(REFRESHED_TOKEN);
+    expect(validate).toHaveBeenCalledWith('fake.id.token');
+    const stored = JSON.parse(h.unsign(findSetCookie(res, 'identity_access_token')!.value) as string);
+    expect(stored).toMatchObject({ t: REFRESHED_TOKEN, sub: USER_ID });
+  });
+
+  // ---- #18: a revoked but unexpired token ----
+
+  it('exchange refuses a live token with invalid_grant → one refresh → exchange succeeds with the new token', async () => {
+    const fetchMock = mockIdentity({
+      exchange: [INVALID_GRANT, { body: { access_token: 'minted.widget.jwt', token_type: 'Bearer', expires_in: 300 } }],
+    });
+
+    const res = await widget({
+      identity_access_token: accessCookie(LIVE_TOKEN, 3600),
+      refresh_token: h.sign(REFRESH_TOKEN),
+    });
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ accessToken: 'minted.widget.jwt' });
+    const calls = callsTo(fetchMock);
+    expect(calls.map((b) => b.get('grant_type'))).toEqual([
+      'urn:ietf:params:oauth:grant-type:token-exchange',
+      'refresh_token',
+      'urn:ietf:params:oauth:grant-type:token-exchange',
+    ]);
+    expect(calls[0].get('subject_token')).toBe(LIVE_TOKEN);
+    expect(calls[2].get('subject_token')).toBe(REFRESHED_TOKEN);
+    expect(JSON.parse(h.unsign(findSetCookie(res, 'identity_access_token')!.value) as string).t).toBe(REFRESHED_TOKEN);
+    expect(h.unsign(findSetCookie(res, 'refresh_token')!.value)).toBe(ROTATED_REFRESH_TOKEN);
+  });
+
+  it('exchange refuses with invalid_grant and the refresh is refused → 401 (not 400), access token cleared', async () => {
+    const fetchMock = mockIdentity({
+      exchange: INVALID_GRANT,
+      refresh: { status: 400, body: { error: 'invalid_grant', error_description: 'grant request is invalid' } },
+    });
+
+    const res = await widget({
+      identity_access_token: accessCookie(LIVE_TOKEN, 3600),
+      refresh_token: h.sign(REFRESH_TOKEN),
+    });
+
+    expect(res.status).toBe(401);
+    expect(JSON.parse(res.body)).toMatchObject({ error: 'unauthorized' });
+    expect(callsTo(fetchMock).map((b) => b.get('grant_type'))).toEqual([
+      'urn:ietf:params:oauth:grant-type:token-exchange',
+      'refresh_token',
+    ]);
+    expect(findSetCookie(res, 'identity_access_token')!.value).toBe('');
+  });
+
+  it('exchange refuses with invalid_grant and there is no refresh token → 401', async () => {
+    mockIdentity({ exchange: INVALID_GRANT });
+
+    const res = await widget({ identity_access_token: accessCookie(LIVE_TOKEN, 3600) });
+
+    expect(res.status).toBe(401);
+    expect(findSetCookie(res, 'identity_access_token')!.value).toBe('');
+  });
+
+  it('invalid_grant again after the one refresh → 401, never a second refresh', async () => {
+    const fetchMock = mockIdentity({ exchange: INVALID_GRANT });
+
+    const res = await widget({
+      identity_access_token: accessCookie(LIVE_TOKEN, 3600),
+      refresh_token: h.sign(REFRESH_TOKEN),
+    });
+
+    expect(res.status).toBe(401);
+    expect(callsTo(fetchMock).map((b) => b.get('grant_type'))).toEqual([
+      'urn:ietf:params:oauth:grant-type:token-exchange',
+      'refresh_token',
+      'urn:ietf:params:oauth:grant-type:token-exchange',
+    ]);
+    expect(findSetCookie(res, 'identity_access_token')!.value).toBe('');
+  });
+
+  it('invalid_grant on a token refreshed in this request → 401 without refreshing again', async () => {
+    const fetchMock = mockIdentity({ exchange: INVALID_GRANT });
+
+    const res = await widget({ refresh_token: h.sign(REFRESH_TOKEN) });
+
+    expect(res.status).toBe(401);
+    expect(callsTo(fetchMock).map((b) => b.get('grant_type'))).toEqual([
+      'refresh_token',
+      'urn:ietf:params:oauth:grant-type:token-exchange',
+    ]);
+  });
+
   it('logout clears the access token cookie', async () => {
     const res = await h.request('POST', '/auth/logout', {
       auth_token: sessionCookie,
@@ -432,15 +628,24 @@ describe.each(HARNESSES)('%s plugin: access token as the widget subject', (_name
 describe('usableAccessToken', () => {
   const NOW = 1_800_000_000_000;
 
-  it('returns the token while it has more than the skew left', () => {
-    expect(usableAccessToken(serializeAccessToken(LIVE_TOKEN, 3600, NOW), NOW)).toBe(LIVE_TOKEN);
+  it('returns the token and its user while it has more than the skew left', () => {
+    expect(usableAccessToken(serializeAccessToken(LIVE_TOKEN, 3600, USER_ID, NOW), NOW)).toEqual({
+      token: LIVE_TOKEN,
+      sub: USER_ID,
+    });
   });
 
   it('returns null once the token is expired, or inside the skew before expiry', () => {
-    const raw = serializeAccessToken(LIVE_TOKEN, 3600, NOW);
+    const raw = serializeAccessToken(LIVE_TOKEN, 3600, USER_ID, NOW);
     expect(usableAccessToken(raw, NOW + 3600_000)).toBeNull();
     expect(usableAccessToken(raw, NOW + 3600_000 - ACCESS_TOKEN_EXPIRY_SKEW_MS)).toBeNull();
-    expect(usableAccessToken(raw, NOW + 3600_000 - ACCESS_TOKEN_EXPIRY_SKEW_MS - 1)).toBe(LIVE_TOKEN);
+    expect(usableAccessToken(raw, NOW + 3600_000 - ACCESS_TOKEN_EXPIRY_SKEW_MS - 1)?.token).toBe(LIVE_TOKEN);
+  });
+
+  it('returns null for a 1.4.0 cookie that has no sub, however live', () => {
+    const legacy = JSON.stringify({ t: LIVE_TOKEN, exp: NOW + 3600_000 });
+    expect(usableAccessToken(legacy, NOW)).toBeNull();
+    expect(usableAccessToken(JSON.stringify({ t: LIVE_TOKEN, exp: NOW + 3600_000, sub: '' }), NOW)).toBeNull();
   });
 
   it('returns null for a missing or malformed value', () => {

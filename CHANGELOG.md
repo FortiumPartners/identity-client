@@ -4,6 +4,32 @@ All notable changes to `@fortium/identity-client`, `@fortium/identity-client/exp
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] — 2026-09-29
+
+Core, Express and Fastify all move to 1.4.1. Refs #18.
+
+### Fixed
+
+- **`/widget-token` only uses a subject token issued to the session user.** In 1.4.0 the subject came from the `identity_access_token` and `refresh_token` cookies, and nothing tied either to the `auth_token` session. An app route that sets only `auth_token`, or a login that returns no refresh token, could leave an earlier user's tokens in place, and the widget then minted tokens as that earlier user. Now:
+  - The `identity_access_token` cookie records the `fortium_user_id` the token was issued to (`{t, exp, sub}`), taken from the validated ID token at `/callback` and `/refresh`. `/widget-token` compares it with the session user before the exchange. On a mismatch it clears the access and refresh token cookies and answers `401`.
+  - The route's server-side refresh validates the returned ID token through JWKS and accepts the new tokens only when it names the session user. A different user, a missing ID token or a failed validation clears both cookies and answers `401`.
+  - `/callback` clears `refresh_token` when Identity returns none, so an earlier user's refresh token never outlives a new login.
+  - `/refresh` without an ID token clears `identity_access_token` instead of storing a token it cannot bind to a user.
+- **A revoked but unexpired access token recovers instead of failing with `400`.** When the exchange is refused with `invalid_grant`, the route drops the stored token and refreshes once, with the same user check, then retries the exchange. If the refresh is refused or the retried exchange is refused again, it answers `401`, the frontend's re-auth signal. A refresh that cannot reach Identity is still a retryable `503`.
+
+### Changed
+
+- **`serializeAccessToken(accessToken, expiresIn, sub, now?)`** takes the user id as its third argument.
+- **`usableAccessToken(raw, now?)`** returns `{ token, sub }` (the new `StoredAccessToken` type) instead of the bare token, and returns `null` for a cookie without `sub`.
+
+### Upgrading
+
+- Cookies written by 1.4.0 have no `sub`, so they are never trusted. Each user's first widget request after the upgrade refreshes once, validates the ID token, and stores a bound cookie.
+
+### Not changed
+
+- The refresh-rotation race when a request is sent before the browser applies a rotated `refresh_token` (#18, item 3) is still open. Refreshing only on expiry keeps it rare, and the fix, a short grace window for a just-rotated token, belongs on Identity's side.
+
 ## [1.4.0] — 2026-09-29
 
 Core, Express and Fastify all move to 1.4.0.
