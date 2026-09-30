@@ -59,6 +59,13 @@ export interface IdentityPluginOptions {
         value: string;
         maxAge: number;
     }>;
+    /**
+     * Called by GET /login when the query carries no valid `login_hint`, to
+     * derive one server-side (e.g. from a signed cookie) instead of putting an
+     * email address in a URL. The result is validated like the query parameter
+     * and dropped when invalid. If it throws, the login proceeds without a hint.
+     */
+    resolveLoginHint?: (req: Request) => string | undefined | Promise<string | undefined>;
 }
 export declare function createIdentityRouter(opts: IdentityPluginOptions): Router;
 declare global {

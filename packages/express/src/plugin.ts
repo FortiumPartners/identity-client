@@ -20,6 +20,7 @@ import {
   selectPendingState,
   removePendingState,
   serializePendingStates,
+  sanitizeLoginHint,
   serializeAccessToken,
   usableAccessToken,
 } from '@fortium/identity-client';
@@ -76,6 +77,14 @@ export interface IdentityPluginOptions {
    * Useful for storing the raw access token for backend forwarding (e.g., Talent).
    */
   extraCookies?: (tokens: { accessToken: string; idToken: string; refreshToken?: string }, claims: FortiumClaims) => Record<string, { value: string; maxAge: number }>;
+
+  /**
+   * Called by GET /login when the query carries no valid `login_hint`, to
+   * derive one server-side (e.g. from a signed cookie) instead of putting an
+   * email address in a URL. The result is validated like the query parameter
+   * and dropped when invalid. If it throws, the login proceeds without a hint.
+   */
+  resolveLoginHint?: (req: Request) => string | undefined | Promise<string | undefined>;
 }
 
 // Cookie name helpers
@@ -268,31 +277,79 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
     return { token: tokens.accessToken };
   }
 
+  // Helper: the login_hint for this /login, or undefined. A valid query
+  // hint wins; resolveLoginHint is consulted only when the query carries no
+  // valid one. The login never fails because of the hint, and its value is
+  // never logged or reflected anywhere but the authorization URL.
+  async function loginHintFor(req: Request): Promise<string | undefined> {
+    const rawHint: unknown = req.query.login_hint;
+    if (rawHint !== undefined) {
+      const hint = sanitizeLoginHint(rawHint);
+      if (hint) return hint;
+      console.debug(
+        JSON.stringify({
+          level: 'debug',
+          msg: 'OIDC login: login_hint rejected, dropped',
+          loginHintSource: 'query',
+          loginHintType: typeof rawHint,
+          loginHintLength: typeof rawHint === 'string' ? rawHint.length : undefined,
+        }),
+      );
+    }
+    if (!opts.resolveLoginHint) return undefined;
+
+    let resolved: unknown;
+    try {
+      resolved = await opts.resolveLoginHint(req);
+    } catch (err) {
+      console.log(
+        JSON.stringify({
+          level: 'warn',
+          msg: 'OIDC login: resolveLoginHint threw, proceeding without a login_hint',
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      return undefined;
+    }
+    if (resolved === undefined) return undefined;
+    const hint = sanitizeLoginHint(resolved);
+    if (!hint) {
+      console.debug(
+        JSON.stringify({
+          level: 'debug',
+          msg: 'OIDC login: login_hint rejected, dropped',
+          loginHintSource: 'resolveLoginHint',
+          loginHintType: typeof resolved,
+          loginHintLength: typeof resolved === 'string' ? resolved.length : undefined,
+        }),
+      );
+    }
+    return hint;
+  }
+
   // ------------------------------------------------------------------
   // GET /login — Redirect to Identity for OIDC authentication
   // ------------------------------------------------------------------
   router.get('/login', async (req: Request, res: Response) => {
     try {
+      // Optional OIDC prompt and login_hint. Core forwards a prompt only when
+      // it is allowed and a login_hint only when sanitizeLoginHint accepts it.
+      const promptParam = req.query.prompt;
+      const loginHint = await loginHintFor(req);
+
       // Use the configured callbackUrl directly — deriving from req.hostname
       // breaks behind reverse proxies (e.g., nginx → Render internal hostname).
-      const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
-
-      // Append optional OIDC prompt parameter if provided and valid
-      const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
-      const promptParam = req.query.prompt as string | undefined;
-      let redirectUrl = url;
-      if (promptParam && ALLOWED_PROMPTS.includes(promptParam)) {
-        const parsed = new URL(url);
-        parsed.searchParams.set('prompt', promptParam);
-        redirectUrl = parsed.toString();
-      }
+      const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl, {
+        prompt: typeof promptParam === 'string' ? promptParam : undefined,
+        loginHint,
+      });
 
       // Append to the array of pending auth attempts so overlapping flows
       // (double-click, second tab) don't clobber each other's PKCE state.
       const existingStates = parsePendingStates(readSignedCookie(req, OIDC_STATE_COOKIE));
       const updatedStates = appendPendingState(existingStates, state);
       res.cookie(OIDC_STATE_COOKIE, serializePendingStates(updatedStates), cookieOpts(600));
-      res.redirect(redirectUrl);
+      res.redirect(url);
     } catch (error) {
       console.error('Login redirect failed:', error);
       res.redirect(`${opts.frontendUrl}/login?error=login_failed`);

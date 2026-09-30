@@ -8,6 +8,7 @@
 import { webcrypto } from 'node:crypto';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { FortiumClaims, OIDCState, TokenResponse, TokenResult, RefreshResult } from './types.js';
+import { sanitizeLoginHint } from './login-hint.js';
 
 // Node 18 doesn't expose crypto as a global in ESM
 const cryptoImpl = globalThis.crypto ?? webcrypto;
@@ -24,10 +25,21 @@ const ENFORCED_SCOPES = 'openid profile email fortium offline_access';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** OIDC `prompt` values generateAuthorizationUrl forwards. */
+export const ALLOWED_PROMPTS: readonly string[] = Object.freeze(['login', 'select_account', 'consent', 'none']);
+
 export interface IdentityClientConfig {
   issuer: string;
   clientId: string;
   clientSecret: string;
+}
+
+/** Extra authorization request parameters for generateAuthorizationUrl. */
+export interface AuthorizationUrlOptions {
+  /** OIDC `login_hint`, e.g. the email address to pre-fill. Dropped unless sanitizeLoginHint accepts it. */
+  loginHint?: string;
+  /** OIDC `prompt`. Dropped unless it is one of ALLOWED_PROMPTS. */
+  prompt?: string;
 }
 
 export class IdentityClient {
@@ -56,8 +68,15 @@ export class IdentityClient {
   /**
    * Generate OIDC authorization URL with PKCE.
    * Returns the URL to redirect the user to and the OIDC state to store in a cookie.
+   *
+   * `opts.prompt` is appended only when it is one of ALLOWED_PROMPTS, and
+   * `opts.loginHint` only when sanitizeLoginHint accepts it (trimmed). Any
+   * other value is dropped. Without opts the URL is the same as before 1.5.0.
    */
-  async generateAuthorizationUrl(redirectUri: string): Promise<{ url: string; state: OIDCState }> {
+  async generateAuthorizationUrl(
+    redirectUri: string,
+    opts: AuthorizationUrlOptions = {},
+  ): Promise<{ url: string; state: OIDCState }> {
     const stateBytes = new Uint8Array(32);
     const nonceBytes = new Uint8Array(32);
     const verifierBytes = new Uint8Array(32);
@@ -83,6 +102,13 @@ export class IdentityClient {
       code_challenge: codeChallenge,
       code_challenge_method: 'S256',
     });
+    if (typeof opts.prompt === 'string' && ALLOWED_PROMPTS.includes(opts.prompt)) {
+      params.set('prompt', opts.prompt);
+    }
+    const loginHint = sanitizeLoginHint(opts.loginHint);
+    if (loginHint) {
+      params.set('login_hint', loginHint);
+    }
 
     const authUrl = new URL(OIDC_ENDPOINTS.authorization, this.issuer);
     authUrl.search = params.toString();

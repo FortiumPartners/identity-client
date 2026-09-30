@@ -54,6 +54,14 @@ export interface IdentityPluginOptions {
      * If not provided, returns { user: { fortiumUserId, email } }.
      */
     getMe?: (session: SessionPayload) => Promise<Record<string, unknown>>;
+    /**
+     * Called by GET /auth/login when the query carries no valid `login_hint`,
+     * to derive one server-side (e.g. from a signed cookie) instead of putting
+     * an email address in a URL. The result is validated like the query
+     * parameter and dropped when invalid. If it throws, the login proceeds
+     * without a hint.
+     */
+    resolveLoginHint?: (request: FastifyRequest) => string | undefined | Promise<string | undefined>;
 }
 declare function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOptions): Promise<void>;
 export declare const identityPlugin: typeof identityPluginImpl;

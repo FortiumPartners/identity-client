@@ -107,13 +107,32 @@ app.get('/api/protected', { preHandler: [auth] }, async (request, reply) => {
 
 `GET /auth/login?returnTo=/some/path` makes that login's `/auth/callback` redirect to `frontendUrl + returnTo` instead of `postLoginPath`. Only a relative path is accepted: exactly one leading `/`, printable ASCII (percent-encode anything else), no `:` before the query string, at most 256 characters and at most 384 bytes once cookie-encoded, and the percent-decoded form must still start with a single `/`. Anything else is dropped and the callback falls back to `postLoginPath`. The path is stored with that attempt's pending OIDC state, so overlapping logins each land on their own.
 
+### Pre-filling the sign-in email: `login_hint` (both plugins, since 1.5.0)
+
+`GET /auth/login?login_hint=ada%40example.com` forwards `login_hint=ada@example.com` to Identity's authorize endpoint, so Identity's sign-in can pre-fill that address (an invitation link, say). The hint must be a string with no control characters that is 1 to 254 characters once trimmed, and it is forwarded trimmed. Anything else is dropped with a debug log and the login proceeds without it. The plugin never logs the value or stores it in a cookie. `returnTo`, `prompt`, state, nonce and PKCE are unaffected.
+
+To keep an email address out of the URL (and out of access logs), derive it server-side with `resolveLoginHint`:
+
+```typescript
+await app.register(identityPlugin, {
+  // ...
+  resolveLoginHint: async (request) => {
+    const raw = request.cookies.invite_email;
+    const unsigned = raw ? request.unsignCookie(raw) : null;
+    return unsigned?.valid ? unsigned.value ?? undefined : undefined;
+  },
+});
+```
+
+The resolver is called only when the query carries no valid `login_hint`; a valid query hint wins. Its result is validated the same way. If it throws or rejects, the plugin logs a warning and the login proceeds without a hint. The Express option has the same shape and receives the Express `Request`.
+
 ## Routes (both plugins)
 
 Both plugins register the same routes:
 
 | Route | Method | Description |
 |---|---|---|
-| `/login` | GET | Redirect to Identity for OIDC login (Fastify: optional `?returnTo=/path`, see above) |
+| `/login` | GET | Redirect to Identity for OIDC login. Optional `?login_hint=<address>` and `?prompt=`; Fastify also takes `?returnTo=/path` (see above) |
 | `/callback` | GET | Handle OIDC callback, set session cookies |
 | `/me` | GET | Return current user from session |
 | `/refresh` | POST | Exchange refresh token for new tokens |
@@ -169,6 +188,7 @@ All cookies are signed, httpOnly, sameSite=lax, secure in production.
 | `authorize` | No | Hook called after OIDC auth — check permissions, return extra session data |
 | `getMe` | No | Hook to build `/me` response |
 | `extraCookies` | No | Express only — set additional cookies from tokens (e.g., access token for backend forwarding) |
+| `resolveLoginHint` | No | `(request) => string \| undefined \| Promise<string \| undefined>`. Supplies `login_hint` when the `/login` query has no valid one (since 1.5.0, see above) |
 
 ## Core Package Usage
 
@@ -185,6 +205,12 @@ const client = new IdentityClient({
 
 // Generate auth URL
 const { url, state } = await client.generateAuthorizationUrl('https://app.example.com/callback');
+
+// Optionally with an OIDC login_hint and prompt (since 1.5.0). Invalid values are dropped.
+const withHint = await client.generateAuthorizationUrl('https://app.example.com/callback', {
+  loginHint: 'ada@example.com',
+  prompt: 'login',
+});
 
 // Exchange code for tokens
 const { claims, idToken, refreshToken } = await client.exchangeCode(code, state);
