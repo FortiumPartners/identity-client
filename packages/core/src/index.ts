@@ -1,5 +1,6 @@
-export { IdentityClient } from './identity-client.js';
-export type { IdentityClientConfig } from './identity-client.js';
+export { IdentityClient, ALLOWED_PROMPTS } from './identity-client.js';
+export type { IdentityClientConfig, AuthorizationUrlOptions } from './identity-client.js';
+export { sanitizeLoginHint, LOGIN_HINT_MAX_LENGTH } from './login-hint.js';
 export { createSessionToken, verifySessionToken } from './session.js';
 export type { SessionConfig } from './session.js';
 export { verifyM2MToken } from './m2m.js';

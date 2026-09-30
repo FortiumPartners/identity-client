@@ -22,6 +22,7 @@ import {
   removePendingState,
   serializePendingStates,
   sanitizeReturnTo,
+  sanitizeLoginHint,
   serializeAccessToken,
   usableAccessToken,
 } from '@fortium/identity-client';
@@ -79,6 +80,15 @@ export interface IdentityPluginOptions {
    * If not provided, returns { user: { fortiumUserId, email } }.
    */
   getMe?: (session: SessionPayload) => Promise<Record<string, unknown>>;
+
+  /**
+   * Called by GET /auth/login when the query carries no valid `login_hint`,
+   * to derive one server-side (e.g. from a signed cookie) instead of putting
+   * an email address in a URL. The result is validated like the query
+   * parameter and dropped when invalid. If it throws, the login proceeds
+   * without a hint.
+   */
+  resolveLoginHint?: (request: FastifyRequest) => string | undefined | Promise<string | undefined>;
 }
 
 // Cookie name helpers
@@ -262,13 +272,66 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     return { token: tokens.accessToken };
   }
 
+  // Helper: the login_hint for this /login, or undefined. A valid query
+  // hint wins; resolveLoginHint is consulted only when the query carries no
+  // valid one. The login never fails because of the hint, and its value is
+  // never logged or reflected anywhere but the authorization URL.
+  async function loginHintFor(request: FastifyRequest): Promise<string | undefined> {
+    const rawHint = (request.query as Record<string, unknown>).login_hint;
+    if (rawHint !== undefined) {
+      const hint = sanitizeLoginHint(rawHint);
+      if (hint) return hint;
+      request.log.debug(
+        {
+          loginHintSource: 'query',
+          loginHintType: typeof rawHint,
+          loginHintLength: typeof rawHint === 'string' ? rawHint.length : undefined,
+        },
+        'OIDC login: login_hint rejected, dropped',
+      );
+    }
+    if (!opts.resolveLoginHint) return undefined;
+
+    let resolved: unknown;
+    try {
+      resolved = await opts.resolveLoginHint(request);
+    } catch (err) {
+      request.log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'OIDC login: resolveLoginHint threw, proceeding without a login_hint',
+      );
+      return undefined;
+    }
+    if (resolved === undefined) return undefined;
+    const hint = sanitizeLoginHint(resolved);
+    if (!hint) {
+      request.log.debug(
+        {
+          loginHintSource: 'resolveLoginHint',
+          loginHintType: typeof resolved,
+          loginHintLength: typeof resolved === 'string' ? resolved.length : undefined,
+        },
+        'OIDC login: login_hint rejected, dropped',
+      );
+    }
+    return hint;
+  }
+
   // ------------------------------------------------------------------
   // GET /auth/login — Redirect to Identity for OIDC authentication
   // ------------------------------------------------------------------
   app.get('/login', async (request, reply) => {
+    // Optional OIDC prompt and login_hint. Core forwards a prompt only when
+    // it is allowed and a login_hint only when sanitizeLoginHint accepts it.
+    const promptParam = (request.query as Record<string, unknown>).prompt;
+    const loginHint = await loginHintFor(request);
+
     // Use the configured callbackUrl directly — deriving from request.hostname
     // breaks behind reverse proxies (e.g., nginx → Render internal hostname).
-    const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
+    const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl, {
+      prompt: typeof promptParam === 'string' ? promptParam : undefined,
+      loginHint,
+    });
 
     // Optional per-request landing path. Only a validated relative path is
     // kept (see sanitizeReturnTo); anything else is dropped and /callback
@@ -288,22 +351,12 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       );
     }
 
-    // Append optional OIDC prompt parameter if provided and valid
-    const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
-    const promptParam = (request.query as Record<string, string>).prompt;
-    let redirectUrl = url;
-    if (promptParam && ALLOWED_PROMPTS.includes(promptParam)) {
-      const parsed = new URL(url);
-      parsed.searchParams.set('prompt', promptParam);
-      redirectUrl = parsed.toString();
-    }
-
     // Append to the array of pending auth attempts so overlapping flows
     // (double-click, second tab) don't clobber each other's PKCE state.
     const existingStates = parsePendingStates(unsign(request, OIDC_STATE_COOKIE));
     const updatedStates = appendPendingState(existingStates, state);
     reply.setCookie(OIDC_STATE_COOKIE, serializePendingStates(updatedStates), cookieOpts(600));
-    reply.redirect(redirectUrl);
+    reply.redirect(url);
   });
 
   // ------------------------------------------------------------------

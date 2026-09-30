@@ -5,10 +5,19 @@
  * Framework-agnostic — used directly or via the Fastify plugin.
  */
 import type { FortiumClaims, OIDCState, TokenResult, RefreshResult } from './types.js';
+/** OIDC `prompt` values generateAuthorizationUrl forwards. */
+export declare const ALLOWED_PROMPTS: readonly string[];
 export interface IdentityClientConfig {
     issuer: string;
     clientId: string;
     clientSecret: string;
+}
+/** Extra authorization request parameters for generateAuthorizationUrl. */
+export interface AuthorizationUrlOptions {
+    /** OIDC `login_hint`, e.g. the email address to pre-fill. Dropped unless sanitizeLoginHint accepts it. */
+    loginHint?: string;
+    /** OIDC `prompt`. Dropped unless it is one of ALLOWED_PROMPTS. */
+    prompt?: string;
 }
 export declare class IdentityClient {
     private issuer;
@@ -23,8 +32,12 @@ export declare class IdentityClient {
     /**
      * Generate OIDC authorization URL with PKCE.
      * Returns the URL to redirect the user to and the OIDC state to store in a cookie.
+     *
+     * `opts.prompt` is appended only when it is one of ALLOWED_PROMPTS, and
+     * `opts.loginHint` only when sanitizeLoginHint accepts it (trimmed). Any
+     * other value is dropped. Without opts the URL is the same as before 1.5.0.
      */
-    generateAuthorizationUrl(redirectUri: string): Promise<{
+    generateAuthorizationUrl(redirectUri: string, opts?: AuthorizationUrlOptions): Promise<{
         url: string;
         state: OIDCState;
     }>;

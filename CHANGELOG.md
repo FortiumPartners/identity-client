@@ -4,6 +4,22 @@ All notable changes to `@fortium/identity-client`, `@fortium/identity-client/exp
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] — 2026-09-30
+
+Core, Express and Fastify all move to 1.5.0. Closes #20.
+
+### Added
+
+- **`GET /auth/login?login_hint=<address>` forwards an OIDC `login_hint`** on both plugins, so an invitation can pre-fill the invited email address at Identity's sign-in. The hint is accepted when it is a string with no control characters that is 1 to 254 characters once trimmed, and it is forwarded trimmed. Anything else (empty, too long, a control character, a repeated or nested parameter) is dropped with a debug log, like a rejected `returnTo`, and the login proceeds without it. The value is never logged, stored in a cookie or put anywhere but the authorization URL.
+- **`resolveLoginHint` plugin option**, `(request) => string | undefined | Promise<string | undefined>`. Called when the query carries no valid `login_hint`, so an app can derive the hint server-side (from a signed cookie, say) instead of putting an email address in a URL. A valid query hint wins and the resolver is not called. The result is validated the same way. If the resolver throws or rejects, the plugin logs a warning and the login proceeds without a hint.
+- **`IdentityClient.generateAuthorizationUrl(redirectUri, opts?)`** takes `{ loginHint?, prompt? }` (the `AuthorizationUrlOptions` type), so a server-side caller can build the URL without the plugin route. A `prompt` outside `login`, `select_account`, `consent` and `none`, or a hint `sanitizeLoginHint` rejects, is dropped.
+- `sanitizeLoginHint`, `LOGIN_HINT_MAX_LENGTH` and `ALLOWED_PROMPTS` in core.
+
+### Not changed
+
+- Without a hint, the authorization URL, the pending OIDC state (state, nonce, PKCE verifier, `returnTo`) and `prompt` handling are byte for byte what 1.4.1 produced. The plugins now pass `prompt` to core instead of appending it themselves, with the same allowlist.
+- Identity's own sign-in page still has to read `login_hint` to pre-fill the email field (FortiumPartners/identity#217). Until it does, the parameter reaches Identity and has no visible effect.
+
 ## [1.4.1] — 2026-09-29
 
 Core, Express and Fastify all move to 1.4.1. Refs #18.

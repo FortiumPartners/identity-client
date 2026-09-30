@@ -9,7 +9,7 @@
  */
 import fp from 'fastify-plugin';
 import '@fastify/cookie'; // Type augmentations for cookies
-import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, sanitizeReturnTo, serializeAccessToken, usableAccessToken, } from '@fortium/identity-client';
+import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, sanitizeReturnTo, sanitizeLoginHint, serializeAccessToken, usableAccessToken, } from '@fortium/identity-client';
 // Cookie name helpers
 function cookieName(prefix, name) {
     return prefix ? `${prefix}_${name}` : name;
@@ -164,13 +164,58 @@ async function identityPluginImpl(app, opts) {
         }
         return { token: tokens.accessToken };
     }
+    // Helper: the login_hint for this /login, or undefined. A valid query
+    // hint wins; resolveLoginHint is consulted only when the query carries no
+    // valid one. The login never fails because of the hint, and its value is
+    // never logged or reflected anywhere but the authorization URL.
+    async function loginHintFor(request) {
+        const rawHint = request.query.login_hint;
+        if (rawHint !== undefined) {
+            const hint = sanitizeLoginHint(rawHint);
+            if (hint)
+                return hint;
+            request.log.debug({
+                loginHintSource: 'query',
+                loginHintType: typeof rawHint,
+                loginHintLength: typeof rawHint === 'string' ? rawHint.length : undefined,
+            }, 'OIDC login: login_hint rejected, dropped');
+        }
+        if (!opts.resolveLoginHint)
+            return undefined;
+        let resolved;
+        try {
+            resolved = await opts.resolveLoginHint(request);
+        }
+        catch (err) {
+            request.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'OIDC login: resolveLoginHint threw, proceeding without a login_hint');
+            return undefined;
+        }
+        if (resolved === undefined)
+            return undefined;
+        const hint = sanitizeLoginHint(resolved);
+        if (!hint) {
+            request.log.debug({
+                loginHintSource: 'resolveLoginHint',
+                loginHintType: typeof resolved,
+                loginHintLength: typeof resolved === 'string' ? resolved.length : undefined,
+            }, 'OIDC login: login_hint rejected, dropped');
+        }
+        return hint;
+    }
     // ------------------------------------------------------------------
     // GET /auth/login — Redirect to Identity for OIDC authentication
     // ------------------------------------------------------------------
     app.get('/login', async (request, reply) => {
+        // Optional OIDC prompt and login_hint. Core forwards a prompt only when
+        // it is allowed and a login_hint only when sanitizeLoginHint accepts it.
+        const promptParam = request.query.prompt;
+        const loginHint = await loginHintFor(request);
         // Use the configured callbackUrl directly — deriving from request.hostname
         // breaks behind reverse proxies (e.g., nginx → Render internal hostname).
-        const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl);
+        const { url, state } = await client.generateAuthorizationUrl(opts.callbackUrl, {
+            prompt: typeof promptParam === 'string' ? promptParam : undefined,
+            loginHint,
+        });
         // Optional per-request landing path. Only a validated relative path is
         // kept (see sanitizeReturnTo); anything else is dropped and /callback
         // falls back to postLoginPath. It rides on THIS attempt's pending state,
@@ -186,21 +231,12 @@ async function identityPluginImpl(app, opts) {
                 returnToLength: typeof rawReturnTo === 'string' ? rawReturnTo.length : undefined,
             }, 'OIDC login: returnTo rejected, falling back to postLoginPath');
         }
-        // Append optional OIDC prompt parameter if provided and valid
-        const ALLOWED_PROMPTS = ['login', 'select_account', 'consent', 'none'];
-        const promptParam = request.query.prompt;
-        let redirectUrl = url;
-        if (promptParam && ALLOWED_PROMPTS.includes(promptParam)) {
-            const parsed = new URL(url);
-            parsed.searchParams.set('prompt', promptParam);
-            redirectUrl = parsed.toString();
-        }
         // Append to the array of pending auth attempts so overlapping flows
         // (double-click, second tab) don't clobber each other's PKCE state.
         const existingStates = parsePendingStates(unsign(request, OIDC_STATE_COOKIE));
         const updatedStates = appendPendingState(existingStates, state);
         reply.setCookie(OIDC_STATE_COOKIE, serializePendingStates(updatedStates), cookieOpts(600));
-        reply.redirect(redirectUrl);
+        reply.redirect(url);
     });
     // ------------------------------------------------------------------
     // GET /auth/callback — Handle OIDC callback, exchange code, set cookies
