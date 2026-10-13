@@ -21,6 +21,7 @@ import {
   removePendingState,
   serializePendingStates,
   sanitizeLoginHint,
+  sanitizeCallbackError,
   serializeAccessToken,
   usableAccessToken,
 } from '@fortium/identity-client';
@@ -369,7 +370,25 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
   // ------------------------------------------------------------------
   router.get('/callback', async (req: Request, res: Response) => {
     try {
-      const { code, state } = req.query as { code?: string; state?: string };
+      const { code, state, error } = req.query as { code?: string; state?: string; error?: unknown };
+
+      // An error response (RFC 6749 section 4.1.2.1) is trusted only when its
+      // state matches a pending attempt of this browser. Then the registered
+      // code is forwarded so the app can tell a refusal from a broken callback.
+      // Otherwise it falls through to invalid_callback, as before.
+      if (!code && typeof error === 'string' && typeof state === 'string') {
+        const pendingStates = parsePendingStates(readSignedCookie(req, OIDC_STATE_COOKIE));
+        if (selectPendingState(pendingStates, state)) {
+          const remainingStates = removePendingState(pendingStates, state);
+          if (remainingStates.length === 0) {
+            res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+          } else {
+            res.cookie(OIDC_STATE_COOKIE, serializePendingStates(remainingStates), cookieOpts(600));
+          }
+          const errorCode = sanitizeCallbackError(error) ?? 'invalid_callback';
+          return res.redirect(`${opts.frontendUrl}/login?error=${errorCode}`);
+        }
+      }
 
       if (!code || !state) {
         return res.redirect(`${opts.frontendUrl}/login?error=invalid_callback`);

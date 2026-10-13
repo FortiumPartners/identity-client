@@ -1,5 +1,6 @@
 export { IdentityClient, ALLOWED_PROMPTS } from './identity-client.js';
 export { sanitizeLoginHint, LOGIN_HINT_MAX_LENGTH } from './login-hint.js';
+export { sanitizeCallbackError, CALLBACK_ERROR_CODES } from './callback-error.js';
 export { createSessionToken, verifySessionToken } from './session.js';
 export { verifyM2MToken } from './m2m.js';
 export { parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, sanitizeReturnTo, } from './pending-states.js';
