@@ -176,6 +176,14 @@ function stateCookiePair(res: Res): string | undefined {
   return pair && pair !== 'oidc_state=' ? pair : undefined;
 }
 
+/**
+ * The cookies a response set, minus the login guard (identity-client#25): an
+ * untrusted callback changes no oidc_state cookie, but it does arm the guard.
+ */
+function withoutGuard(res: Res): string[] {
+  return res.setCookies.filter((c) => !c.startsWith('login_guard='));
+}
+
 /** The pending `state` values stored in an oidc_state cookie pair. */
 function storedStates(pair: string): string[] {
   let value = decodeURIComponent(pair.slice('oidc_state='.length));
@@ -278,21 +286,21 @@ describe.each(HARNESSES)('%s plugin: GET /auth/callback with an OAuth error resp
       const { cookie } = await login();
       const res = await h.get('/auth/callback?error=access_denied', cookie);
       expect(res.location).toBe(`${FRONTEND}/login?error=invalid_callback`);
-      expect(res.setCookies).toEqual([]);
+      expect(withoutGuard(res)).toEqual([]);
     });
 
     it('error with a state that matches no pending attempt', async () => {
       const { cookie } = await login();
       const res = await h.get('/auth/callback?error=access_denied&state=does-not-exist', cookie);
       expect(res.location).toBe(`${FRONTEND}/login?error=invalid_callback`);
-      expect(res.setCookies).toEqual([]);
+      expect(withoutGuard(res)).toEqual([]);
     });
 
     it('error with a state but no state cookie', async () => {
       const { state } = await login();
       const res = await h.get(`/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`);
       expect(res.location).toBe(`${FRONTEND}/login?error=invalid_callback`);
-      expect(res.setCookies).toEqual([]);
+      expect(withoutGuard(res)).toEqual([]);
     });
 
     it('error with a state cookie whose signature is invalid', async () => {
@@ -300,7 +308,7 @@ describe.each(HARNESSES)('%s plugin: GET /auth/callback with an OAuth error resp
       const forged = cookie.slice(0, -4) + 'AAAA';
       const res = await h.get(`/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`, forged);
       expect(res.location).toBe(`${FRONTEND}/login?error=invalid_callback`);
-      expect(res.setCookies).toEqual([]);
+      expect(withoutGuard(res)).toEqual([]);
     });
 
     it('a repeated state parameter', async () => {

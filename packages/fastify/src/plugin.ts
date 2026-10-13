@@ -24,6 +24,10 @@ import {
   sanitizeReturnTo,
   sanitizeLoginHint,
   sanitizeCallbackError,
+  serializeLoginGuard,
+  activeLoginGuard,
+  isExplicitLoginPrompt,
+  LOGIN_GUARD_DEFAULT_SECONDS,
   serializeAccessToken,
   usableAccessToken,
 } from '@fortium/identity-client';
@@ -75,6 +79,14 @@ export interface IdentityPluginOptions {
    * which the plugin already sets in production.
    */
   cookieSameSite?: 'lax' | 'strict' | 'none';
+  /**
+   * Seconds after a callback that ended in an error during which GET /auth/login
+   * refuses to start a new authorization request and redirects to
+   * `<frontendUrl>/login?error=<code>` instead (default: 30). A `prompt=login`
+   * or `prompt=select_account` request is an explicit user action and is not
+   * refused. 0 turns the guard off.
+   */
+  loginGuardSeconds?: number;
 
   /**
    * Called after Identity authenticates the user.
@@ -111,8 +123,14 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   const ID_TOKEN_COOKIE = cookieName(prefix, 'id_token');
   const REFRESH_TOKEN_COOKIE = cookieName(prefix, 'refresh_token');
   const ACCESS_TOKEN_COOKIE = cookieName(prefix, 'identity_access_token');
+  const LOGIN_GUARD_COOKIE = cookieName(prefix, 'login_guard');
 
   const isProd = process.env.NODE_ENV === 'production';
+
+  const loginGuardSeconds = opts.loginGuardSeconds ?? LOGIN_GUARD_DEFAULT_SECONDS;
+  if (!Number.isFinite(loginGuardSeconds) || loginGuardSeconds < 0) {
+    throw new TypeError(`loginGuardSeconds must be a number of seconds >= 0, got '${String(opts.loginGuardSeconds)}'`);
+  }
 
   const client = new IdentityClient({
     issuer: opts.issuer,
@@ -167,6 +185,13 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     const unsigned = request.unsignCookie(raw);
     if (!unsigned.valid || !unsigned.value) return null;
     return unsigned.value;
+  }
+
+  // Helper: record that this browser's callback just ended in an error, so
+  // /login does not start another attempt straight away (loginGuardSeconds).
+  function markLoginFailed(reply: FastifyReply, error: unknown) {
+    if (loginGuardSeconds === 0) return;
+    reply.setCookie(LOGIN_GUARD_COOKIE, serializeLoginGuard(error), cookieOpts(Math.ceil(loginGuardSeconds)));
   }
 
   // Helper: keep the user's access token for /widget-token's subject_token,
@@ -330,9 +355,24 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
   // GET /auth/login — Redirect to Identity for OIDC authentication
   // ------------------------------------------------------------------
   app.get('/login', async (request, reply) => {
+    const promptParam = (request.query as Record<string, unknown>).prompt;
+
+    // After a callback that ended in an error, do not send the browser back
+    // to Identity: it would be refused again, and an app whose /login
+    // restarts the flow would loop. Send it to the app's error destination
+    // (the one /callback uses) with the code. prompt=login and
+    // prompt=select_account are explicit user actions (OIDC Core section
+    // 3.1.2.1): they go through and end the guard.
+    const guardCookie = unsign(request, LOGIN_GUARD_COOKIE);
+    if (isExplicitLoginPrompt(promptParam)) {
+      if (guardCookie) reply.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
+    } else {
+      const guardedError = loginGuardSeconds > 0 ? activeLoginGuard(guardCookie, loginGuardSeconds) : undefined;
+      if (guardedError) return reply.redirect(`${opts.frontendUrl}/login?error=${guardedError}`);
+    }
+
     // Optional OIDC prompt and login_hint. Core forwards a prompt only when
     // it is allowed and a login_hint only when sanitizeLoginHint accepts it.
-    const promptParam = (request.query as Record<string, unknown>).prompt;
     const loginHint = await loginHintFor(request);
 
     // Use the configured callbackUrl directly — deriving from request.hostname
@@ -389,11 +429,13 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
             reply.setCookie(OIDC_STATE_COOKIE, serializePendingStates(remainingStates), cookieOpts(600));
           }
           const errorCode = sanitizeCallbackError(error) ?? 'invalid_callback';
+          markLoginFailed(reply, errorCode);
           return reply.redirect(`${opts.frontendUrl}/login?error=${errorCode}`);
         }
       }
 
       if (!code || !state) {
+        markLoginFailed(reply, 'invalid_callback');
         return reply.redirect(`${opts.frontendUrl}/login?error=invalid_callback`);
       }
 
@@ -458,6 +500,9 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
         ...extraSessionData,
       };
       const sessionToken = await createSessionToken(sessionPayload, sessionConfig);
+
+      // A successful sign-in ends the guard.
+      reply.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
 
       // Set cookies
       reply.setCookie(AUTH_TOKEN_COOKIE, sessionToken, cookieOpts(86400)); // 24h
@@ -747,6 +792,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
     reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+    reply.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
 
     const identityBase = opts.issuer.replace(/\/oidc$/, '');
     const returnTo = `${opts.frontendUrl}/login?switch=1`;

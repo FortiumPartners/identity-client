@@ -4,6 +4,21 @@ All notable changes to `@fortium/identity-client`, `@fortium/identity-client/exp
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] — 2026-10-13
+
+Core, Express and Fastify all move to 1.7.0. Closes #25.
+
+### Added
+
+- **A failed callback blocks the next `/login` for 30 seconds.** When `/callback` ends in an error (an OAuth error forwarded as in 1.6.0, or `invalid_callback`), both plugins set their own short-lived signed, httpOnly cookie, `login_guard` (with `cookiePrefix`, `<prefix>_login_guard`), recording the error code and the time. While it is fresh, `GET /login` does not start an authorization request. It redirects to `<frontendUrl>/login?error=<code>`, the same destination `/callback` used. Apps that restart the login from `/login` no longer reach Identity in a loop (OIDC Core section 3.1.2.6; RFC 9700). The cookie does not depend on `oidc_state`, which may have expired or never matched, so the guard also fires after an `invalid_callback`. The stored code goes through `sanitizeCallbackError`, so only a registered code or `invalid_callback` can be stored.
+- **An explicit user action still starts a fresh attempt.** A `/login` request with `prompt=login` or `prompt=select_account` (OIDC Core section 3.1.2.1) goes through and clears the guard. So do a successful callback and `/switch-account`.
+- **`loginGuardSeconds` plugin option** on both plugins: the window in seconds (default 30, `0` turns the guard off). A negative or non-finite value throws a `TypeError`.
+- **Exports** in core: `serializeLoginGuard`, `activeLoginGuard`, `isExplicitLoginPrompt`, `LOGIN_GUARD_DEFAULT_SECONDS`.
+
+### Action for apps
+
+Keep `/login` from redirecting to `/auth/login` when `error` is present. The guard stops the loop from reaching Identity, but a `/login` that always restarts the flow still bounces the browser between the app and the plugin until the browser gives up. A "Sign in again" button on the error page should link to `/auth/login?prompt=login`, because a plain `/auth/login` is refused for 30 seconds after a failure.
+
 ## [1.6.0] — 2026-10-13
 
 Core, Express and Fastify all move to 1.6.0. Closes #24. Also releases the two token-endpoint entries below.

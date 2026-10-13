@@ -148,6 +148,12 @@ If Identity redirects to `/callback` with an OAuth error instead of a code (a us
 
 Your `/login` page must render `error=access_denied` as a refusal and must not start a new login because of it: restarting the login sends the browser back to Identity, which refuses again, in a loop.
 
+### After a failed callback, `/login` refuses for 30 seconds (since 1.7.0)
+
+When `/callback` ends in an error (a forwarded OAuth error or `invalid_callback`), the plugin sets a signed, httpOnly `login_guard` cookie. While it is fresh, `GET /login` does not start an authorization request: it redirects to `<frontendUrl>/login?error=<code>` instead, so a `/login` that restarts the flow cannot loop through Identity. Set `loginGuardSeconds` to change the window (default 30, `0` turns the guard off).
+
+A `/login` request with `prompt=login` or `prompt=select_account` is an explicit user action: it goes through and clears the guard, as does a successful callback. Point a "Sign in again" button at `/auth/login?prompt=login`.
+
 ### `/widget-token` — RFC 8693 token exchange
 
 ```http
