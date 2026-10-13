@@ -4,6 +4,16 @@ All notable changes to `@fortium/identity-client`, `@fortium/identity-client/exp
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Token endpoint calls authenticate with `client_secret_basic`.** `exchangeCode`, `refreshToken` and `requestWidgetToken` send `Authorization: Basic base64(urlencode(client_id):urlencode(client_secret))` (RFC 6749 section 2.3.1) and no longer put `client_id` or `client_secret` in the body. Identity accepts Basic for every secret client today, so no consumer breaks. Refs FortiumPartners/identity#180.
+
+### Added
+
+- **`tokenEndpointAuthMethod` option** on `IdentityClient` and both plugins: `'client_secret_basic'` (default) or `'client_secret_post'`, for an app whose Identity registration still says post. An unknown value throws a `TypeError`. Exports the `TokenEndpointAuthMethod` type.
+
 ## [1.5.0] — 2026-09-30
 
 Core, Express and Fastify all move to 1.5.0. Closes #20.

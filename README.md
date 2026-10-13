@@ -177,6 +177,7 @@ All cookies are signed, httpOnly, sameSite=lax, secure in production.
 | `issuer` | Yes | Identity issuer URL |
 | `clientId` | Yes | OIDC client ID |
 | `clientSecret` | Yes | OIDC client secret |
+| `tokenEndpointAuthMethod` | No | `'client_secret_basic'` (default) or `'client_secret_post'`. How the client authenticates to `/oidc/token`; see [Token endpoint authentication](#token-endpoint-authentication) |
 | `callbackUrl` | Yes | Full callback URL |
 | `frontendUrl` | Yes | Frontend URL for redirects |
 | `jwtSecret` | Yes | Secret for session JWTs and cookie signing |
@@ -189,6 +190,23 @@ All cookies are signed, httpOnly, sameSite=lax, secure in production.
 | `getMe` | No | Hook to build `/me` response |
 | `extraCookies` | No | Express only — set additional cookies from tokens (e.g., access token for backend forwarding) |
 | `resolveLoginHint` | No | `(request) => string \| undefined \| Promise<string \| undefined>`. Supplies `login_hint` when the `/login` query has no valid one (since 1.5.0, see above) |
+
+## Token endpoint authentication
+
+The SDK authenticates to Identity's `/oidc/token` with HTTP Basic (`client_secret_basic`) on every call it makes: the code exchange, the refresh and the RFC 8693 token exchange behind `/widget-token`. [RFC 6749 section 2.3.1](https://www.rfc-editor.org/rfc/rfc6749#section-2.3.1) requires servers to support Basic and says credentials in the request body are not recommended; OAuth 2.1 says the same.
+
+The header is `Basic base64(urlencode(client_id) + ':' + urlencode(client_secret))`, each part form-urlencoded as the RFC specifies, so a secret containing `:`, `+`, `/`, `%` or a space is sent correctly. The body carries neither `client_id` nor `client_secret`.
+
+An app whose Identity registration still says `client_secret_post` can keep matching it until the registration moves:
+
+```typescript
+new IdentityClient({ issuer, clientId, clientSecret, tokenEndpointAuthMethod: 'client_secret_post' });
+
+// or on a plugin
+await app.register(identityPlugin, { ...opts, tokenEndpointAuthMethod: 'client_secret_post' });
+```
+
+Identity accepts Basic for every secret client today, whichever method the client is registered with, so the default works without a registration change. Once Identity enforces the registered method per client (identity#180), a client registered `client_secret_post` must set this option or move its registration to `client_secret_basic`. An unknown value throws a `TypeError` at construction.
 
 ## Core Package Usage
 

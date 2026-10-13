@@ -27,6 +27,7 @@ import {
   usableAccessToken,
 } from '@fortium/identity-client';
 import type {
+  TokenEndpointAuthMethod,
   FortiumClaims,
   SessionPayload,
   M2MAuthOptions,
@@ -41,6 +42,12 @@ export interface IdentityPluginOptions {
   clientId: string;
   /** OIDC client secret */
   clientSecret: string;
+  /**
+   * How the client authenticates to Identity's token endpoint (default:
+   * 'client_secret_basic'). Use 'client_secret_post' while the app's Identity
+   * registration still says post.
+   */
+  tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   /** Full callback URL (e.g., https://app.example.com/auth/callback) */
   callbackUrl: string;
   /** Frontend URL for redirects after login/logout */
@@ -110,6 +117,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
     issuer: opts.issuer,
     clientId: opts.clientId,
     clientSecret: opts.clientSecret,
+    tokenEndpointAuthMethod: opts.tokenEndpointAuthMethod,
   });
 
   const sessionConfig = {
