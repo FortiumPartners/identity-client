@@ -9,7 +9,7 @@
  */
 import fp from 'fastify-plugin';
 import '@fastify/cookie'; // Type augmentations for cookies
-import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, sanitizeReturnTo, sanitizeLoginHint, serializeAccessToken, usableAccessToken, } from '@fortium/identity-client';
+import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, sanitizeReturnTo, sanitizeLoginHint, sanitizeCallbackError, serializeAccessToken, usableAccessToken, } from '@fortium/identity-client';
 // Cookie name helpers
 function cookieName(prefix, name) {
     return prefix ? `${prefix}_${name}` : name;
@@ -244,7 +244,25 @@ async function identityPluginImpl(app, opts) {
     // ------------------------------------------------------------------
     app.get('/callback', async (request, reply) => {
         try {
-            const { code, state } = request.query;
+            const { code, state, error } = request.query;
+            // An error response (RFC 6749 section 4.1.2.1) is trusted only when its
+            // state matches a pending attempt of this browser. Then the registered
+            // code is forwarded so the app can tell a refusal from a broken callback.
+            // Otherwise it falls through to invalid_callback, as before.
+            if (!code && typeof error === 'string' && typeof state === 'string') {
+                const pendingStates = parsePendingStates(unsign(request, OIDC_STATE_COOKIE));
+                if (selectPendingState(pendingStates, state)) {
+                    const remainingStates = removePendingState(pendingStates, state);
+                    if (remainingStates.length === 0) {
+                        reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+                    }
+                    else {
+                        reply.setCookie(OIDC_STATE_COOKIE, serializePendingStates(remainingStates), cookieOpts(600));
+                    }
+                    const errorCode = sanitizeCallbackError(error) ?? 'invalid_callback';
+                    return reply.redirect(`${opts.frontendUrl}/login?error=${errorCode}`);
+                }
+            }
             if (!code || !state) {
                 return reply.redirect(`${opts.frontendUrl}/login?error=invalid_callback`);
             }

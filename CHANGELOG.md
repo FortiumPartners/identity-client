@@ -4,7 +4,22 @@ All notable changes to `@fortium/identity-client`, `@fortium/identity-client/exp
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.6.0] — 2026-10-13
+
+Core, Express and Fastify all move to 1.6.0. Closes #24. Also releases the two token-endpoint entries below.
+
+### Fixed
+
+- **`/callback` forwards the error Identity returns instead of hiding it as `invalid_callback`.** When Identity refuses a login it redirects to `/auth/callback?error=access_denied&state=...` (RFC 6749 section 4.1.2.1). Both plugins turned every callback without a `code` into `/login?error=invalid_callback`, so an app could not tell a refusal from a broken callback. A `/login` that restarts the login on an unknown error then looped between the app and Identity until the browser gave up (`ERR_TOO_MANY_REDIRECTS`; 96 refusals in 40 minutes on 2026-10-13). Now, on both plugins, a callback with an `error` and no `code` redirects to `<frontendUrl>/login?error=<code>` when `<code>` is one of the registered codes: `invalid_request`, `unauthorized_client`, `access_denied`, `unsupported_response_type`, `invalid_scope`, `server_error`, `temporarily_unavailable` (RFC 6749 section 4.1.2.1) and `interaction_required`, `login_required`, `account_selection_required`, `consent_required`, `invalid_request_uri`, `invalid_request_object`, `request_not_supported`, `request_uri_not_supported`, `registration_not_supported` (OIDC Core section 3.1.2.6). Any other value, or a repeated `error` parameter, maps to `invalid_callback`. `error_description` and `error_uri` are never read, so they never reach a URL.
+- **The error is trusted only with a matching `state`.** The returned `state` must match a pending attempt in this browser's signed `oidc_state` cookie. The matching attempt is consumed (other in-flight attempts are kept). With a missing `state`, no cookie, an invalid signature or a `state` that matches nothing, the redirect is `/login?error=invalid_callback` as before, and no cookie is changed.
+
+### Action for apps
+
+Render the refusal on `/login?error=access_denied` (and the other codes above) and do not restart the login from it. `/login` must not redirect to `/auth/login` when `error` is present, or a user whose account has no entitlement loops between the app and Identity. `invalid_callback`, `state_missing`, `state_mismatch` and `callback_failed` keep their meaning.
+
+### Exports
+
+- `sanitizeCallbackError(raw)` and `CALLBACK_ERROR_CODES` in core.
 
 ### Changed
 

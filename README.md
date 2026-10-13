@@ -142,6 +142,12 @@ Both plugins register the same routes:
 
 Mount at `/auth` to get `/auth/login`, `/auth/callback`, etc.
 
+### When Identity refuses the login: `/login?error=<code>` (since 1.6.0)
+
+If Identity redirects to `/callback` with an OAuth error instead of a code (a user with no entitlement gets `access_denied`), the plugin redirects to `<frontendUrl>/login?error=<code>`. The code is forwarded when it is a registered RFC 6749 section 4.1.2.1 or OIDC Core section 3.1.2.6 code (`access_denied`, `login_required`, `consent_required`, `interaction_required`, `server_error` and the rest) and the returned `state` matches a login this browser started. Any other value maps to `invalid_callback`. `error_description` and `error_uri` are never put in the URL.
+
+Your `/login` page must render `error=access_denied` as a refusal and must not start a new login because of it: restarting the login sends the browser back to Identity, which refuses again, in a loop.
+
 ### `/widget-token` — RFC 8693 token exchange
 
 ```http
