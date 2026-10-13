@@ -28,10 +28,25 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 /** OIDC `prompt` values generateAuthorizationUrl forwards. */
 export const ALLOWED_PROMPTS: readonly string[] = Object.freeze(['login', 'select_account', 'consent', 'none']);
 
+/** How the client authenticates to the token endpoint (RFC 6749 section 2.3.1). */
+export type TokenEndpointAuthMethod = 'client_secret_basic' | 'client_secret_post';
+
 export interface IdentityClientConfig {
   issuer: string;
   clientId: string;
   clientSecret: string;
+  /**
+   * Token endpoint authentication method. Default `client_secret_basic`
+   * (HTTP Basic, the method RFC 6749 section 2.3.1 requires servers to
+   * support). Set `client_secret_post` for an app whose Identity
+   * registration still says post.
+   */
+  tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
+}
+
+/** application/x-www-form-urlencoded encoding of one value (RFC 6749 Appendix B). */
+function formUrlEncode(value: string): string {
+  return new URLSearchParams({ v: value }).toString().slice(2);
 }
 
 /** Extra authorization request parameters for generateAuthorizationUrl. */
@@ -46,12 +61,44 @@ export class IdentityClient {
   private issuer: string;
   private clientId: string;
   private clientSecret: string;
+  private tokenEndpointAuthMethod: TokenEndpointAuthMethod;
   private jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 
   constructor(config: IdentityClientConfig) {
     this.issuer = config.issuer;
     this.clientId = config.clientId;
     this.clientSecret = config.clientSecret;
+    const method = config.tokenEndpointAuthMethod ?? 'client_secret_basic';
+    if (method !== 'client_secret_basic' && method !== 'client_secret_post') {
+      throw new TypeError(
+        `tokenEndpointAuthMethod must be 'client_secret_basic' or 'client_secret_post', got '${String(method)}'`,
+      );
+    }
+    this.tokenEndpointAuthMethod = method;
+  }
+
+  /**
+   * Headers and body for a token endpoint POST, authenticating the client with
+   * the configured method.
+   *
+   * Basic (RFC 6749 section 2.3.1): the client_id and client_secret are each
+   * form-urlencoded, joined with ':' and base64 encoded. Neither goes in the
+   * body: client_id is only required there when the client does not
+   * authenticate with Basic (section 4.1.3), and oidc-provider takes it from
+   * the header.
+   * Post: client_id and client_secret go in the body, which is what the SDK always sent before.
+   */
+  private tokenRequest(params: Record<string, string>): { headers: Record<string, string>; body: string } {
+    const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
+    const body = new URLSearchParams(params);
+    if (this.tokenEndpointAuthMethod === 'client_secret_basic') {
+      const credentials = `${formUrlEncode(this.clientId)}:${formUrlEncode(this.clientSecret)}`;
+      headers.Authorization = `Basic ${Buffer.from(credentials, 'utf8').toString('base64')}`;
+    } else {
+      body.set('client_id', this.clientId);
+      body.set('client_secret', this.clientSecret);
+    }
+    return { headers, body: body.toString() };
   }
 
   /**
@@ -125,20 +172,14 @@ export class IdentityClient {
   async exchangeCode(code: string, oidcState: OIDCState): Promise<TokenResult> {
     const tokenUrl = new URL(OIDC_ENDPOINTS.token, this.issuer);
 
-    const body = new URLSearchParams({
+    const { headers, body } = this.tokenRequest({
       grant_type: 'authorization_code',
       code,
       redirect_uri: oidcState.redirectUri,
-      client_id: this.clientId,
-      client_secret: this.clientSecret,
       code_verifier: oidcState.codeVerifier,
     });
 
-    const response = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
+    const response = await fetch(tokenUrl, { method: 'POST', headers, body });
 
     if (!response.ok) {
       const errorBody = await response.text();
@@ -163,18 +204,12 @@ export class IdentityClient {
   async refreshToken(refreshToken: string): Promise<RefreshResult> {
     const tokenUrl = new URL(OIDC_ENDPOINTS.token, this.issuer);
 
-    const body = new URLSearchParams({
+    const { headers, body } = this.tokenRequest({
       grant_type: 'refresh_token',
-      client_id: this.clientId,
-      client_secret: this.clientSecret,
       refresh_token: refreshToken,
     });
 
-    const response = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
+    const response = await fetch(tokenUrl, { method: 'POST', headers, body });
 
     if (!response.ok) {
       const errorBody = await response.text();
@@ -241,19 +276,17 @@ export class IdentityClient {
 
     const tokenUrl = new URL(OIDC_ENDPOINTS.token, this.issuer);
 
-    const body = new URLSearchParams({
+    const { headers, body } = this.tokenRequest({
       grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
       subject_token: subjectAccessToken,
       subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
       audience,
-      client_id: this.clientId,
-      client_secret: this.clientSecret,
     });
 
     const response = await fetch(tokenUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
+      headers,
+      body,
       signal: AbortSignal.timeout(timeoutMs),
     });
 

@@ -7,10 +7,19 @@
 import type { FortiumClaims, OIDCState, TokenResult, RefreshResult } from './types.js';
 /** OIDC `prompt` values generateAuthorizationUrl forwards. */
 export declare const ALLOWED_PROMPTS: readonly string[];
+/** How the client authenticates to the token endpoint (RFC 6749 section 2.3.1). */
+export type TokenEndpointAuthMethod = 'client_secret_basic' | 'client_secret_post';
 export interface IdentityClientConfig {
     issuer: string;
     clientId: string;
     clientSecret: string;
+    /**
+     * Token endpoint authentication method. Default `client_secret_basic`
+     * (HTTP Basic, the method RFC 6749 section 2.3.1 requires servers to
+     * support). Set `client_secret_post` for an app whose Identity
+     * registration still says post.
+     */
+    tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
 }
 /** Extra authorization request parameters for generateAuthorizationUrl. */
 export interface AuthorizationUrlOptions {
@@ -23,8 +32,21 @@ export declare class IdentityClient {
     private issuer;
     private clientId;
     private clientSecret;
+    private tokenEndpointAuthMethod;
     private jwks;
     constructor(config: IdentityClientConfig);
+    /**
+     * Headers and body for a token endpoint POST, authenticating the client with
+     * the configured method.
+     *
+     * Basic (RFC 6749 section 2.3.1): the client_id and client_secret are each
+     * form-urlencoded, joined with ':' and base64 encoded. Neither goes in the
+     * body: client_id is only required there when the client does not
+     * authenticate with Basic (section 4.1.3), and oidc-provider takes it from
+     * the header.
+     * Post: client_id and client_secret go in the body, which is what the SDK always sent before.
+     */
+    private tokenRequest;
     /**
      * Get JWKS key set for token validation (cached after first call).
      */

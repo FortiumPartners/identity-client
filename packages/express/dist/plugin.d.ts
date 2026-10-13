@@ -9,7 +9,7 @@
  */
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import type { FortiumClaims, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
+import type { TokenEndpointAuthMethod, FortiumClaims, SessionPayload, M2MAuthOptions, M2MTokenPayload } from '@fortium/identity-client';
 export interface IdentityPluginOptions {
     /** Identity issuer URL (e.g., https://identity.fortiumsoftware.com) */
     issuer: string;
@@ -17,6 +17,12 @@ export interface IdentityPluginOptions {
     clientId: string;
     /** OIDC client secret */
     clientSecret: string;
+    /**
+     * How the client authenticates to Identity's token endpoint (default:
+     * 'client_secret_basic'). Use 'client_secret_post' while the app's Identity
+     * registration still says post.
+     */
+    tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
     /** Full callback URL (e.g., https://app.example.com/auth/callback) */
     callbackUrl: string;
     /** Frontend URL for redirects after login/logout */

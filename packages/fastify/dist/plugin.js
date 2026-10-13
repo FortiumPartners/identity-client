@@ -26,6 +26,7 @@ async function identityPluginImpl(app, opts) {
         issuer: opts.issuer,
         clientId: opts.clientId,
         clientSecret: opts.clientSecret,
+        tokenEndpointAuthMethod: opts.tokenEndpointAuthMethod,
     });
     const sessionConfig = {
         jwtSecret: opts.jwtSecret,

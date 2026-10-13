@@ -20,15 +20,49 @@ const ENFORCED_SCOPES = 'openid profile email fortium offline_access';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** OIDC `prompt` values generateAuthorizationUrl forwards. */
 export const ALLOWED_PROMPTS = Object.freeze(['login', 'select_account', 'consent', 'none']);
+/** application/x-www-form-urlencoded encoding of one value (RFC 6749 Appendix B). */
+function formUrlEncode(value) {
+    return new URLSearchParams({ v: value }).toString().slice(2);
+}
 export class IdentityClient {
     issuer;
     clientId;
     clientSecret;
+    tokenEndpointAuthMethod;
     jwks = null;
     constructor(config) {
         this.issuer = config.issuer;
         this.clientId = config.clientId;
         this.clientSecret = config.clientSecret;
+        const method = config.tokenEndpointAuthMethod ?? 'client_secret_basic';
+        if (method !== 'client_secret_basic' && method !== 'client_secret_post') {
+            throw new TypeError(`tokenEndpointAuthMethod must be 'client_secret_basic' or 'client_secret_post', got '${String(method)}'`);
+        }
+        this.tokenEndpointAuthMethod = method;
+    }
+    /**
+     * Headers and body for a token endpoint POST, authenticating the client with
+     * the configured method.
+     *
+     * Basic (RFC 6749 section 2.3.1): the client_id and client_secret are each
+     * form-urlencoded, joined with ':' and base64 encoded. Neither goes in the
+     * body: client_id is only required there when the client does not
+     * authenticate with Basic (section 4.1.3), and oidc-provider takes it from
+     * the header.
+     * Post: client_id and client_secret go in the body, which is what the SDK always sent before.
+     */
+    tokenRequest(params) {
+        const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+        const body = new URLSearchParams(params);
+        if (this.tokenEndpointAuthMethod === 'client_secret_basic') {
+            const credentials = `${formUrlEncode(this.clientId)}:${formUrlEncode(this.clientSecret)}`;
+            headers.Authorization = `Basic ${Buffer.from(credentials, 'utf8').toString('base64')}`;
+        }
+        else {
+            body.set('client_id', this.clientId);
+            body.set('client_secret', this.clientSecret);
+        }
+        return { headers, body: body.toString() };
     }
     /**
      * Get JWKS key set for token validation (cached after first call).
@@ -90,19 +124,13 @@ export class IdentityClient {
      */
     async exchangeCode(code, oidcState) {
         const tokenUrl = new URL(OIDC_ENDPOINTS.token, this.issuer);
-        const body = new URLSearchParams({
+        const { headers, body } = this.tokenRequest({
             grant_type: 'authorization_code',
             code,
             redirect_uri: oidcState.redirectUri,
-            client_id: this.clientId,
-            client_secret: this.clientSecret,
             code_verifier: oidcState.codeVerifier,
         });
-        const response = await fetch(tokenUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: body.toString(),
-        });
+        const response = await fetch(tokenUrl, { method: 'POST', headers, body });
         if (!response.ok) {
             const errorBody = await response.text();
             throw new Error(`Token exchange failed: ${response.status} - ${errorBody}`);
@@ -122,17 +150,11 @@ export class IdentityClient {
      */
     async refreshToken(refreshToken) {
         const tokenUrl = new URL(OIDC_ENDPOINTS.token, this.issuer);
-        const body = new URLSearchParams({
+        const { headers, body } = this.tokenRequest({
             grant_type: 'refresh_token',
-            client_id: this.clientId,
-            client_secret: this.clientSecret,
             refresh_token: refreshToken,
         });
-        const response = await fetch(tokenUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: body.toString(),
-        });
+        const response = await fetch(tokenUrl, { method: 'POST', headers, body });
         if (!response.ok) {
             const errorBody = await response.text();
             // statusCode tells a refused refresh (re-authenticate) from an
@@ -179,18 +201,16 @@ export class IdentityClient {
             throw new TypeError('requestWidgetToken: subjectAccessToken must be the user\'s Identity access token, not a user_id');
         }
         const tokenUrl = new URL(OIDC_ENDPOINTS.token, this.issuer);
-        const body = new URLSearchParams({
+        const { headers, body } = this.tokenRequest({
             grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
             subject_token: subjectAccessToken,
             subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
             audience,
-            client_id: this.clientId,
-            client_secret: this.clientSecret,
         });
         const response = await fetch(tokenUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: body.toString(),
+            headers,
+            body,
             signal: AbortSignal.timeout(timeoutMs),
         });
         if (!response.ok) {

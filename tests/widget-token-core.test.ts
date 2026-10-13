@@ -78,8 +78,12 @@ describe('IdentityClient.requestWidgetToken', () => {
     expect(body.get('subject_token')).toBe(ACCESS_TOKEN);
     expect(body.get('subject_token_type')).toBe('urn:ietf:params:oauth:token-type:access_token');
     expect(body.get('audience')).toBe('ideas-api');
-    expect(body.get('client_id')).toBe(CLIENT_ID);
-    expect(body.get('client_secret')).toBe(CLIENT_SECRET);
+    // Client authentication is HTTP Basic by default (identity#180); see tests/token-endpoint-auth.test.ts.
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: `Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')}`,
+    });
+    expect(body.has('client_id')).toBe(false);
+    expect(body.has('client_secret')).toBe(false);
   });
 
   it('Identity 400 invalid_target → throws Error with statusCode=400 and oauthError=invalid_target', async () => {
