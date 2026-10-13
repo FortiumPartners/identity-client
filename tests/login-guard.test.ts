@@ -26,7 +26,10 @@ import {
   serializeLoginGuard,
   activeLoginGuard,
   isExplicitLoginPrompt,
+  loginGuardRetryUrl,
+  renderLoginGuardPage,
   LOGIN_GUARD_DEFAULT_SECONDS,
+  LOGIN_GUARD_PAGE_HEADERS,
 } from '../packages/core/src/login-guard.js';
 import { CALLBACK_ERROR_CODES } from '../packages/core/src/callback-error.js';
 
@@ -107,13 +110,72 @@ describe('login guard (core)', () => {
   });
 });
 
+describe('login guard page (core)', () => {
+  const RETRY = 'https://app.test/auth/login?prompt=login';
+
+  it('has the headers of a terminal, uncacheable page', () => {
+    expect(LOGIN_GUARD_PAGE_HEADERS).toEqual({
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+    });
+  });
+
+  it('is a plain page with a lang, a title, the code and exactly one link', () => {
+    const html = renderLoginGuardPage('access_denied', RETRY);
+    expect(html).toMatch(/^<!DOCTYPE html>/);
+    expect(html).toContain('<html lang="en">');
+    expect(html).toMatch(/<title>[^<]+<\/title>/);
+    expect(html).toContain('<code>access_denied</code>');
+    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(html).toContain(`<a href="${RETRY}">Try again</a>`);
+  });
+
+  it('carries no script, no style and no external resource', () => {
+    const html = renderLoginGuardPage('access_denied', RETRY);
+    for (const banned of ['<script', 'style=', '<style', '<link', '<img', '<iframe', '<form', 'onclick', 'src=']) {
+      expect(html.toLowerCase()).not.toContain(banned);
+    }
+  });
+
+  it('escapes the code and the link', () => {
+    const html = renderLoginGuardPage('<script>alert(1)</script>"\'&', 'https://app.test/a?x="><script>&y=1');
+    expect(html).not.toContain('<script');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;&quot;&#39;&amp;');
+    expect(html).toContain('href="https://app.test/a?x=&quot;&gt;&lt;script&gt;&amp;y=1"');
+  });
+
+  describe('loginGuardRetryUrl', () => {
+    it('is the sibling login route of the callback URL, with prompt=login', () => {
+      expect(loginGuardRetryUrl('https://app.test/auth/callback')).toBe('https://app.test/auth/login?prompt=login');
+      expect(loginGuardRetryUrl('https://app.test/api/v2/auth/callback')).toBe(
+        'https://app.test/api/v2/auth/login?prompt=login',
+      );
+    });
+
+    it('keeps an already validated returnTo, percent-encoded', () => {
+      expect(loginGuardRetryUrl('https://app.test/auth/callback', '/deals?id=1&x=2')).toBe(
+        'https://app.test/auth/login?prompt=login&returnTo=%2Fdeals%3Fid%3D1%26x%3D2',
+      );
+    });
+
+    it('drops any query on the callback URL', () => {
+      expect(loginGuardRetryUrl('https://app.test/auth/callback?a=1')).toBe('https://app.test/auth/login?prompt=login');
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Plugins
 // ---------------------------------------------------------------------------
 
 interface Res {
   status: number;
+  body: string;
   location?: string;
+  contentType?: string;
+  cacheControl?: string;
+  referrerPolicy?: string;
   setCookies: string[];
 }
 
@@ -151,7 +213,11 @@ async function fastifyHarness(extra: Record<string, unknown> = {}): Promise<Harn
       const raw = res.headers['set-cookie'];
       return {
         status: res.statusCode,
+        body: res.body,
         location: res.headers.location as string | undefined,
+        contentType: res.headers['content-type'] as string | undefined,
+        cacheControl: res.headers['cache-control'] as string | undefined,
+        referrerPolicy: res.headers['referrer-policy'] as string | undefined,
         setCookies: Array.isArray(raw) ? raw : raw ? [String(raw)] : [],
       };
     },
@@ -179,7 +245,11 @@ async function expressHarness(extra: Record<string, unknown> = {}): Promise<Harn
       });
       return {
         status: res.status,
+        body: await res.text(),
         location: res.headers.get('location') ?? undefined,
+        contentType: res.headers.get('content-type') ?? undefined,
+        cacheControl: res.headers.get('cache-control') ?? undefined,
+        referrerPolicy: res.headers.get('referrer-policy') ?? undefined,
         setCookies: res.headers.getSetCookie(),
       };
     },
@@ -197,8 +267,35 @@ const HARNESSES: Array<[string, (extra?: Record<string, unknown>) => Promise<Har
   ['Express', expressHarness],
 ];
 
+/** Only the Fastify plugin accepts `?returnTo=` on /login. */
+const SUPPORTS_RETURN_TO: Record<string, boolean> = { Fastify: true, Express: false };
+
+/** The guard's terminal page for `code`: 200, no redirect, the code shown. */
+function expectGuardPage(res: Res, code: string): void {
+  expect(res.status).toBe(200);
+  expect(res.location).toBeUndefined();
+  expect(res.contentType).toBe('text/html; charset=utf-8');
+  expect(res.cacheControl).toBe('no-store');
+  expect(res.referrerPolicy).toBe('no-referrer');
+  expect(res.body).toContain(`<code>${code}</code>`);
+}
+
+/** The "Try again" href of a guard page, HTML-unescaped. */
+function retryHref(res: Res): string {
+  const match = /<a href="([^"]*)">Try again<\/a>/.exec(res.body);
+  expect(match).not.toBeNull();
+  return (match as RegExpExecArray)[1].replace(/&amp;/g, '&');
+}
+
+/** True when the response sends the browser to Identity's authorization endpoint. */
+function toIdentity(res: Res): boolean {
+  return res.status === 302 && new URL(res.location as string).origin === new URL(ISSUER).origin;
+}
+
 interface Trace {
   hops: string[];
+  /** The last plugin response, when the chain ended on one. */
+  last?: Res;
   /** Requests that reached Identity's authorization endpoint. */
   authorizationRedirects: number;
   /** 'page': the chain ended on a page. 'identity': it stopped at Identity. 'cap': it was still redirecting. */
@@ -272,7 +369,7 @@ class Browser {
       }
       if (u.pathname.startsWith('/auth/')) {
         const res = await this.hit(u.pathname + u.search);
-        if (!res.location) return { ...trace, end: 'page' };
+        if (!res.location) return { ...trace, end: 'page', last: res };
         current = new URL(res.location, FRONTEND).toString();
         continue;
       }
@@ -326,33 +423,97 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       expect(first.hops.at(-1)).toBe(`${FRONTEND}/login?error=access_denied`);
       expect(browser.jar.has('login_guard')).toBe(true);
 
-      // Immediate second attempt.
+      // Immediate second attempt: the plugin answers /auth/login with its own page.
       const second = await browser.visit(`${FRONTEND}/login`);
       expect(second.authorizationRedirects).toBe(0);
       expect(second.end).toBe('page');
-      expect(second.hops.at(-1)).toBe(`${FRONTEND}/login?error=access_denied`);
+      expect(second.hops).toEqual([`${FRONTEND}/login`, `${FRONTEND}/auth/login`]);
+      expectGuardPage(second.last as Res, 'access_denied');
     });
 
-    it('sends the browser to the app error destination, not back to the plugin login', async () => {
+    it('answers the login with a page, not a redirect to the app or back to the plugin', async () => {
       const browser = new Browser(h, 'compliant');
       await browser.visit(`${FRONTEND}/login`);
       const res = await browser.hit('/auth/login');
-      expect(res.status).toBe(302);
-      expect(res.location).toBe(`${FRONTEND}/login?error=access_denied`);
-      expect(new URL(res.location as string).pathname).not.toMatch(/^\/auth\//);
+      expectGuardPage(res, 'access_denied');
     });
 
-    it('never reaches Identity again even when the app /login restarts the flow on every error', async () => {
+    it('ends the chain on the plugin page when the app /login restarts the flow on every error', async () => {
       const browser = new Browser(h, 'naive');
       const trace = await browser.visit(`${FRONTEND}/login`);
-      // One real attempt. Every later /auth/login is answered with the app's
-      // error destination, so Identity is never asked again. The app still
-      // bounces the browser locally (the chain hits the cap), which is why the
-      // README tells apps not to restart the flow from /login?error=.
+      // app /login -> /auth/login -> Identity (refuses) -> /auth/callback ->
+      // app /login?error -> /auth/login -> the plugin's page. Six hops, one
+      // authorization redirect, and the last response has no Location.
+      expect(trace.hops).toHaveLength(6);
+      expect(trace.hops[1]).toBe(`${FRONTEND}/auth/login`);
+      expect(trace.hops[4]).toBe(`${FRONTEND}/login?error=access_denied`);
+      expect(trace.hops[5]).toBe(`${FRONTEND}/auth/login`);
       expect(trace.authorizationRedirects).toBe(1);
-      const guarded = trace.hops.filter((u) => u === `${FRONTEND}/login?error=access_denied`);
-      expect(guarded.length).toBeGreaterThan(2);
-      expect(trace.end).toBe('cap');
+      expect(trace.end).toBe('page');
+      expectGuardPage(trace.last as Res, 'access_denied');
+    });
+
+    it('the Try again link goes through to the authorization endpoint with prompt=login', async () => {
+      const refusing = new Browser(h, 'naive');
+      const refused = await refusing.visit(`${FRONTEND}/login`);
+      const href = retryHref(refused.last as Res);
+      expect(href).toBe(`${FRONTEND}/auth/login?prompt=login`);
+
+      // The user clicks it (Identity now waits at its sign-in page).
+      const clicking = new Browser(h, 'naive', false);
+      clicking.jar.set('login_guard', refusing.jar.get('login_guard') as string);
+      const trace = await clicking.visit(href);
+      expect(trace.end).toBe('identity');
+      expect(trace.authorizationRedirects).toBe(1);
+      expect(new URL(trace.hops.at(-1) as string).searchParams.get('prompt')).toBe('login');
+      expect(clicking.jar.has('login_guard')).toBe(false);
+    });
+
+    it('builds the link from the plugin options, not from request input', async () => {
+      const browser = new Browser(h, 'compliant');
+      await browser.visit(`${FRONTEND}/login`);
+      const hostile = await h.get(
+        '/auth/login?x=%22%3E%3Cscript%3E&error=%3Cscript%3E&prompt=consent&redirect_uri=https://evil.example',
+        browser.cookieHeader(),
+      );
+      expectGuardPage(hostile, 'access_denied');
+      expect(retryHref(hostile)).toBe(`${FRONTEND}/auth/login?prompt=login`);
+      expect(hostile.body).not.toContain('evil');
+      expect(hostile.body).not.toContain('<script');
+    });
+
+    it('keeps a valid returnTo on the link only where the plugin supports it, and drops an invalid one', async () => {
+      const browser = new Browser(h, 'compliant');
+      await browser.visit(`${FRONTEND}/login`);
+      const valid = await h.get('/auth/login?returnTo=%2Fdeals%2F7', browser.cookieHeader());
+      const invalid = await h.get('/auth/login?returnTo=%2F%2Fevil.example', browser.cookieHeader());
+      if (SUPPORTS_RETURN_TO[_name]) {
+        expect(retryHref(valid)).toBe(`${FRONTEND}/auth/login?prompt=login&returnTo=%2Fdeals%2F7`);
+      } else {
+        expect(retryHref(valid)).toBe(`${FRONTEND}/auth/login?prompt=login`);
+      }
+      expect(retryHref(invalid)).toBe(`${FRONTEND}/auth/login?prompt=login`);
+    });
+
+    it('the page has no script, no style and no external resource', async () => {
+      const browser = new Browser(h, 'compliant');
+      await browser.visit(`${FRONTEND}/login`);
+      const res = await browser.hit('/auth/login');
+      for (const banned of ['<script', 'style=', '<style', '<link', '<img', '<iframe', 'src=']) {
+        expect(res.body.toLowerCase()).not.toContain(banned);
+      }
+    });
+
+    it('a forged or tampered cookie yields no page', async () => {
+      const browser = new Browser(h, 'compliant');
+      await browser.visit(`${FRONTEND}/login`);
+      const good = browser.jar.get('login_guard') as string;
+      const forged = encodeURIComponent(serializeLoginGuard('access_denied', T0));
+      for (const cookie of [`login_guard=${forged}`, `login_guard=${good.slice(0, -4)}AAAA`]) {
+        const res = await h.get('/auth/login', cookie);
+        expect(toIdentity(res)).toBe(true);
+        expect(res.body).not.toContain('Sign-in did not complete');
+      }
     });
 
     it('counts: N immediate retries produce zero further authorization redirects', async () => {
@@ -370,8 +531,7 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       const state = /"state":"([^"]+)"/.exec(decodeURIComponent(browser.jar.get('oidc_state') as string))?.[1] as string;
       const res = await browser.hit(`/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`);
       expect(res.location).toBe(`${FRONTEND}/login?error=access_denied`);
-      const next = await browser.hit('/auth/login');
-      expect(next.location).toBe(`${FRONTEND}/login?error=access_denied`);
+      expectGuardPage(await browser.hit('/auth/login'), 'access_denied');
     });
   });
 
@@ -391,7 +551,7 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       const trace = await browser.visit(`${FRONTEND}/login`);
       expect(trace.authorizationRedirects).toBe(0);
       expect(trace.end).toBe('page');
-      expect(trace.hops.at(-1)).toBe(`${FRONTEND}/login?error=invalid_callback`);
+      expectGuardPage(trace.last as Res, 'invalid_callback');
     });
 
     it('also after the flow cookie expired (state was valid, cookie is gone)', async () => {
@@ -401,8 +561,7 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       browser.jar.delete('oidc_state'); // the 10 minute cookie lapsed
       const refused = await browser.hit(`/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`);
       expect(refused.location).toBe(`${FRONTEND}/login?error=invalid_callback`);
-      const next = await browser.hit('/auth/login');
-      expect(next.location).toBe(`${FRONTEND}/login?error=invalid_callback`);
+      expectGuardPage(await browser.hit('/auth/login'), 'invalid_callback');
     });
   });
 
@@ -411,7 +570,7 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       const browser = new Browser(h, 'compliant', false);
       await browser.hit('/auth/callback?state=gone'); // arms the guard
       expect(browser.jar.has('login_guard')).toBe(true);
-      expect((await browser.hit('/auth/login')).location).toBe(`${FRONTEND}/login?error=invalid_callback`);
+      expectGuardPage(await browser.hit('/auth/login'), 'invalid_callback');
 
       const through = await browser.hit(`/auth/login?prompt=${prompt}`);
       expect(through.status).toBe(302);
@@ -436,7 +595,7 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       const browser = new Browser(h, 'compliant', false);
       await browser.hit('/auth/callback?state=gone');
       const res = await browser.hit(`/auth/login?prompt=${encodeURIComponent(prompt)}`);
-      expect(res.location).toBe(`${FRONTEND}/login?error=invalid_callback`);
+      expectGuardPage(res, 'invalid_callback');
     });
   });
 
@@ -446,7 +605,7 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       await browser.hit('/auth/callback?state=gone');
 
       now = T0 + 29_999;
-      expect((await browser.hit('/auth/login')).location).toBe(`${FRONTEND}/login?error=invalid_callback`);
+      expectGuardPage(await browser.hit('/auth/login'), 'invalid_callback');
 
       now = T0 + 30_000;
       const after = await browser.hit('/auth/login');
@@ -469,7 +628,7 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       now = T0 + 40_000;
       await browser.hit('/auth/callback?state=gone');
       now = T0 + 60_000;
-      expect((await browser.hit('/auth/login')).location).toBe(`${FRONTEND}/login?error=invalid_callback`);
+      expectGuardPage(await browser.hit('/auth/login'), 'invalid_callback');
       now = T0 + 70_000;
       expect(new URL((await browser.hit('/auth/login')).location as string).origin).toBe(new URL(ISSUER).origin);
     });
@@ -500,7 +659,9 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       expect(refused.location).toBe(`${FRONTEND}/login?error=invalid_callback`);
       const line = cookieLine(refused, 'login_guard') as string;
       expect(decodeURIComponent(line)).not.toContain('zq7');
-      expect((await browser.hit('/auth/login')).location).toBe(`${FRONTEND}/login?error=invalid_callback`);
+      const page = await browser.hit('/auth/login');
+      expectGuardPage(page, 'invalid_callback');
+      expect(page.body).not.toContain('zq7');
     });
 
     it('is ignored when the signature has been tampered with', async () => {
@@ -546,7 +707,7 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       const b = new URL(((await browser.hit('/auth/login')).location) as string).searchParams.get('state') as string;
       await browser.hit(`/auth/callback?error=access_denied&state=${encodeURIComponent(a)}`);
       expect(browser.jar.has('login_guard')).toBe(true);
-      expect((await browser.hit('/auth/login')).location).toBe(`${FRONTEND}/login?error=access_denied`);
+      expectGuardPage(await browser.hit('/auth/login'), 'access_denied');
 
       const ok = await browser.hit(`/auth/callback?code=authcode&state=${encodeURIComponent(b)}`);
       expect(ok.location).toBe(`${FRONTEND}/dashboard`);
@@ -588,7 +749,7 @@ describe.each(HARNESSES)('%s plugin: loginGuardSeconds', (_name, build) => {
       const browser = new Browser(h, 'compliant', false);
       await browser.hit('/auth/callback?state=gone');
       now = T0 + 4_999;
-      expect((await browser.hit('/auth/login')).location).toBe(`${FRONTEND}/login?error=invalid_callback`);
+      expectGuardPage(await browser.hit('/auth/login'), 'invalid_callback');
       now = T0 + 5_000;
       expect(new URL((await browser.hit('/auth/login')).location as string).origin).toBe(new URL(ISSUER).origin);
     } finally {

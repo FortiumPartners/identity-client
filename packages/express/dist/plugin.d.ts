@@ -43,8 +43,8 @@ export interface IdentityPluginOptions {
     cookieDomain?: string;
     /**
      * Seconds after a callback that ended in an error during which GET /login
-     * refuses to start a new authorization request and redirects to
-     * `<frontendUrl>/login?error=<code>` instead (default: 30). A `prompt=login`
+     * refuses to start a new authorization request and answers with a page
+     * that has a "Try again" link instead (default: 30). A `prompt=login`
      * or `prompt=select_account` request is an explicit user action and is not
      * refused. 0 turns the guard off.
      */

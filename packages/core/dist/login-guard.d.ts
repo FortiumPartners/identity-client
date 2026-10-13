@@ -24,6 +24,23 @@ export declare function serializeLoginGuard(error: unknown, now?: number): strin
  * decide when the guard does. Never throws.
  */
 export declare function activeLoginGuard(raw: string | null | undefined, windowSeconds: number, now?: number): string | undefined;
+/** Headers for the page renderLoginGuardPage returns. */
+export declare const LOGIN_GUARD_PAGE_HEADERS: Readonly<Record<string, string>>;
+/**
+ * The plugin's own login route with `prompt=login`, built from the configured
+ * callback URL (the login route is its sibling) and never from request input.
+ * `returnTo` must already have passed sanitizeReturnTo; it is kept on the link
+ * so a retry lands where the original request meant to.
+ */
+export declare function loginGuardRetryUrl(callbackUrl: string, returnTo?: string): string;
+/**
+ * The page /login answers with, instead of a redirect, while the guard is
+ * fresh. It ends the redirect chain whatever the app's own /login does. No
+ * script, no style, no external resource, so any Content-Security-Policy
+ * allows it. `error` and `retryHref` are escaped here as well as sanitized by
+ * the caller.
+ */
+export declare function renderLoginGuardPage(error: string, retryHref: string): string;
 /**
  * Is this `prompt` an explicit user action that starts a fresh attempt?
  * `login` and `select_account` (OIDC Core section 3.1.2.1) ask the user to

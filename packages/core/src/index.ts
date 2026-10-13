@@ -6,7 +6,10 @@ export {
   serializeLoginGuard,
   activeLoginGuard,
   isExplicitLoginPrompt,
+  loginGuardRetryUrl,
+  renderLoginGuardPage,
   LOGIN_GUARD_DEFAULT_SECONDS,
+  LOGIN_GUARD_PAGE_HEADERS,
 } from './login-guard.js';
 export { createSessionToken, verifySessionToken } from './session.js';
 export type { SessionConfig } from './session.js';

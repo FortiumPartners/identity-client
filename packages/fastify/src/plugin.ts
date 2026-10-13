@@ -27,7 +27,10 @@ import {
   serializeLoginGuard,
   activeLoginGuard,
   isExplicitLoginPrompt,
+  loginGuardRetryUrl,
+  renderLoginGuardPage,
   LOGIN_GUARD_DEFAULT_SECONDS,
+  LOGIN_GUARD_PAGE_HEADERS,
   serializeAccessToken,
   usableAccessToken,
 } from '@fortium/identity-client';
@@ -81,8 +84,8 @@ export interface IdentityPluginOptions {
   cookieSameSite?: 'lax' | 'strict' | 'none';
   /**
    * Seconds after a callback that ended in an error during which GET /auth/login
-   * refuses to start a new authorization request and redirects to
-   * `<frontendUrl>/login?error=<code>` instead (default: 30). A `prompt=login`
+   * refuses to start a new authorization request and answers with a page
+   * that has a "Try again" link instead (default: 30). A `prompt=login`
    * or `prompt=select_account` request is an explicit user action and is not
    * refused. 0 turns the guard off.
    */
@@ -359,16 +362,28 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
 
     // After a callback that ended in an error, do not send the browser back
     // to Identity: it would be refused again, and an app whose /login
-    // restarts the flow would loop. Send it to the app's error destination
-    // (the one /callback uses) with the code. prompt=login and
-    // prompt=select_account are explicit user actions (OIDC Core section
-    // 3.1.2.1): they go through and end the guard.
+    // restarts the flow would loop. Answer with the plugin's own page, which
+    // redirects nowhere, so the chain ends here whatever the app's /login
+    // does. (/callback already sent the browser to the app's error page
+    // once.) prompt=login and prompt=select_account are explicit user
+    // actions (OIDC Core section 3.1.2.1): they go through and end the guard.
     const guardCookie = unsign(request, LOGIN_GUARD_COOKIE);
     if (isExplicitLoginPrompt(promptParam)) {
       if (guardCookie) reply.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
     } else {
       const guardedError = loginGuardSeconds > 0 ? activeLoginGuard(guardCookie, loginGuardSeconds) : undefined;
-      if (guardedError) return reply.redirect(`${opts.frontendUrl}/login?error=${guardedError}`);
+      if (guardedError) {
+        // The retry link keeps the request's returnTo only if it passes the
+        // same validation /login applies to it.
+        const retryUrl = loginGuardRetryUrl(
+          opts.callbackUrl,
+          sanitizeReturnTo((request.query as Record<string, unknown>).returnTo),
+        );
+        return reply
+          .status(200)
+          .headers(LOGIN_GUARD_PAGE_HEADERS)
+          .send(renderLoginGuardPage(guardedError, retryUrl));
+      }
     }
 
     // Optional OIDC prompt and login_hint. Core forwards a prompt only when

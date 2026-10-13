@@ -52,6 +52,62 @@ export function activeLoginGuard(
   return now - ts < windowSeconds * 1000 ? error : undefined;
 }
 
+/** Headers for the page renderLoginGuardPage returns. */
+export const LOGIN_GUARD_PAGE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'Content-Type': 'text/html; charset=utf-8',
+  'Cache-Control': 'no-store',
+  'Referrer-Policy': 'no-referrer',
+});
+
+/**
+ * The plugin's own login route with `prompt=login`, built from the configured
+ * callback URL (the login route is its sibling) and never from request input.
+ * `returnTo` must already have passed sanitizeReturnTo; it is kept on the link
+ * so a retry lands where the original request meant to.
+ */
+export function loginGuardRetryUrl(callbackUrl: string, returnTo?: string): string {
+  const url = new URL('login', callbackUrl);
+  url.search = '';
+  url.searchParams.set('prompt', 'login');
+  if (returnTo) url.searchParams.set('returnTo', returnTo);
+  return url.toString();
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * The page /login answers with, instead of a redirect, while the guard is
+ * fresh. It ends the redirect chain whatever the app's own /login does. No
+ * script, no style, no external resource, so any Content-Security-Policy
+ * allows it. `error` and `retryHref` are escaped here as well as sanitized by
+ * the caller.
+ */
+export function renderLoginGuardPage(error: string, retryHref: string): string {
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<title>Sign-in did not complete</title>',
+    '</head>',
+    '<body>',
+    '<h1>Sign-in did not complete</h1>',
+    `<p>The last sign-in attempt ended with the error <code>${escapeHtml(error)}</code>.</p>`,
+    `<p><a href="${escapeHtml(retryHref)}">Try again</a></p>`,
+    '</body>',
+    '</html>',
+    '',
+  ].join('\n');
+}
+
 /**
  * Is this `prompt` an explicit user action that starts a fresh attempt?
  * `login` and `select_account` (OIDC Core section 3.1.2.1) ask the user to
