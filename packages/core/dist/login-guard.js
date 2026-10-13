@@ -101,6 +101,33 @@ export function renderLoginGuardPage(error, retryHref) {
     ].join('\n');
 }
 /**
+ * The codes OIDC Core section 3.1.2.6 defines as the expected answer to
+ * `prompt=none`: the user has to interact. The client's correct next step is an
+ * interactive authorization request, so they must not block one.
+ */
+const INTERACTION_NEEDED = new Set([
+    'login_required',
+    'interaction_required',
+    'consent_required',
+    'account_selection_required',
+]);
+/**
+ * Does a fresh guard recording `error` block a /login with this `prompt`?
+ *
+ * - An explicit action (`login`, `select_account`) is never blocked.
+ * - After an interaction-needed code, only `prompt=none` is blocked, because it
+ *   would get the same answer. Every other request is the interactive step the
+ *   spec calls for.
+ * - After any other error, every other request is blocked.
+ */
+export function loginGuardBlocks(error, prompt) {
+    if (isExplicitLoginPrompt(prompt))
+        return false;
+    if (INTERACTION_NEEDED.has(error))
+        return prompt === 'none';
+    return true;
+}
+/**
  * Is this `prompt` an explicit user action that starts a fresh attempt?
  * `login` and `select_account` (OIDC Core section 3.1.2.1) ask the user to
  * authenticate or choose an account again, so they are never a loop.

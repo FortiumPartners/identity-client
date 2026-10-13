@@ -154,6 +154,8 @@ When `/callback` ends in an error (a forwarded OAuth error or `invalid_callback`
 
 A `/login` request with `prompt=login` or `prompt=select_account` is an explicit user action: it goes through and clears the guard, as does a successful callback. Point your own "Sign in again" button at `/auth/login?prompt=login`.
 
+The silent check is the exception. `login_required`, `interaction_required`, `consent_required` and `account_selection_required` are the expected answers to `/login?prompt=none` (OIDC Core section 3.1.2.6), and the next step is an interactive request. After one of those, only another `prompt=none` is refused; any other `/login` goes through and clears the guard. After every other error, all requests except `prompt=login` and `prompt=select_account` are refused.
+
 ### `/widget-token` — RFC 8693 token exchange
 
 ```http

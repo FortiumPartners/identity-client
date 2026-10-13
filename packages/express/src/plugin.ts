@@ -24,7 +24,7 @@ import {
   sanitizeCallbackError,
   serializeLoginGuard,
   activeLoginGuard,
-  isExplicitLoginPrompt,
+  loginGuardBlocks,
   loginGuardRetryUrl,
   renderLoginGuardPage,
   LOGIN_GUARD_DEFAULT_SECONDS,
@@ -77,7 +77,10 @@ export interface IdentityPluginOptions {
    * refuses to start a new authorization request and answers with a page
    * that has a "Try again" link instead (default: 30). A `prompt=login`
    * or `prompt=select_account` request is an explicit user action and is not
-   * refused. 0 turns the guard off.
+   * refused. After `login_required`, `interaction_required`,
+   * `consent_required` or `account_selection_required` (the expected answers
+   * to `prompt=none`) only a `prompt=none` request is refused, so the
+   * interactive step that follows goes through. 0 turns the guard off.
    */
   loginGuardSeconds?: number;
 
@@ -376,20 +379,20 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
       // restarts the flow would loop. Answer with the plugin's own page, which
       // redirects nowhere, so the chain ends here whatever the app's /login
       // does. (/callback already sent the browser to the app's error page
-      // once.) prompt=login and prompt=select_account are explicit user
-      // actions (OIDC Core section 3.1.2.1): they go through and end the guard.
+      // once.) loginGuardBlocks decides which requests it refuses: not
+      // prompt=login or prompt=select_account (explicit user actions, OIDC Core
+      // section 3.1.2.1), and after login_required and the other
+      // interaction-needed codes (section 3.1.2.6) only prompt=none. A request
+      // that goes through ends the guard.
       const guardCookie = readSignedCookie(req, LOGIN_GUARD_COOKIE);
-      if (isExplicitLoginPrompt(promptParam)) {
-        if (guardCookie) res.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
-      } else {
-        const guardedError = loginGuardSeconds > 0 ? activeLoginGuard(guardCookie, loginGuardSeconds) : undefined;
-        if (guardedError) {
-          return res
-            .status(200)
-            .set(LOGIN_GUARD_PAGE_HEADERS)
-            .send(renderLoginGuardPage(guardedError, loginGuardRetryUrl(opts.callbackUrl)));
-        }
+      const guardedError = loginGuardSeconds > 0 ? activeLoginGuard(guardCookie, loginGuardSeconds) : undefined;
+      if (guardedError && loginGuardBlocks(guardedError, promptParam)) {
+        return res
+          .status(200)
+          .set(LOGIN_GUARD_PAGE_HEADERS)
+          .send(renderLoginGuardPage(guardedError, loginGuardRetryUrl(opts.callbackUrl)));
       }
+      if (guardCookie) res.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
 
       // Optional OIDC prompt and login_hint. Core forwards a prompt only when
       // it is allowed and a login_hint only when sanitizeLoginHint accepts it.

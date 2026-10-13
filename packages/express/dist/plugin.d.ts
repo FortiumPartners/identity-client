@@ -46,7 +46,10 @@ export interface IdentityPluginOptions {
      * refuses to start a new authorization request and answers with a page
      * that has a "Try again" link instead (default: 30). A `prompt=login`
      * or `prompt=select_account` request is an explicit user action and is not
-     * refused. 0 turns the guard off.
+     * refused. After `login_required`, `interaction_required`,
+     * `consent_required` or `account_selection_required` (the expected answers
+     * to `prompt=none`) only a `prompt=none` request is refused, so the
+     * interactive step that follows goes through. 0 turns the guard off.
      */
     loginGuardSeconds?: number;
     /**

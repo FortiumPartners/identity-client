@@ -6,6 +6,7 @@ export {
   serializeLoginGuard,
   activeLoginGuard,
   isExplicitLoginPrompt,
+  loginGuardBlocks,
   loginGuardRetryUrl,
   renderLoginGuardPage,
   LOGIN_GUARD_DEFAULT_SECONDS,

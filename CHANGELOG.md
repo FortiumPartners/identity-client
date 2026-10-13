@@ -6,18 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project adh
 
 ## [1.7.0] — 2026-10-13
 
-Core, Express and Fastify all move to 1.7.0. Closes #25.
+Core, Express and Fastify all move to 1.7.0. Closes #25. Since 1.6.0 the default `tokenEndpointAuthMethod` is `client_secret_basic`; set `'client_secret_post'` if an app's Identity registration still says post.
 
 ### Added
 
 - **A failed callback blocks the next `/login` for 30 seconds.** When `/callback` ends in an error (an OAuth error forwarded as in 1.6.0, or `invalid_callback`), both plugins set their own short-lived signed, httpOnly cookie, `login_guard` (with `cookiePrefix`, `<prefix>_login_guard`), recording the error code and the time. While it is fresh, `GET /login` does not start an authorization request and does not redirect: it answers 200 with a page of its own (`Cache-Control: no-store`, `Referrer-Policy: no-referrer`, no script, no style, no external resource) showing the error code and one "Try again" link to the plugin's login route with `prompt=login` (kept with a valid `returnTo` on Fastify). The link is built from `callbackUrl`, not from request input. No redirect leaves that response, so the chain ends there in every app, whatever its `/login` does (OIDC Core section 3.1.2.6). The failed callback itself still redirects to `<frontendUrl>/login?error=<code>` as in 1.6.0, so an app that handles the error never shows the page. The cookie does not depend on `oidc_state`, which may have expired or never matched, so the guard also fires after an `invalid_callback`. The stored code goes through `sanitizeCallbackError`, so only a registered code or `invalid_callback` can be stored.
 - **An explicit user action still starts a fresh attempt.** A `/login` request with `prompt=login` or `prompt=select_account` (OIDC Core section 3.1.2.1) goes through and clears the guard. So do a successful callback and `/switch-account`.
+- **After `login_required`, `interaction_required`, `consent_required` or `account_selection_required`, only `prompt=none` is refused.** OIDC Core section 3.1.2.6 defines these as the expected answers to `prompt=none`, and the client's next step is an interactive authorization request. So an app that tries `/auth/login?prompt=none`, gets `login_required`, and then sends the user to `/auth/login` (with no prompt, or `prompt=consent`) is not shown the plugin's page: that request goes through and clears the guard. Another `prompt=none` would get the same answer, so it is refused. After every other error the rule above applies unchanged. The rule is the core function `loginGuardBlocks(error, prompt)`, used by both plugins.
 - **`loginGuardSeconds` plugin option** on both plugins: the window in seconds (default 30, `0` turns the guard off). A negative or non-finite value throws a `TypeError`.
-- **Exports** in core: `serializeLoginGuard`, `activeLoginGuard`, `isExplicitLoginPrompt`, `loginGuardRetryUrl`, `renderLoginGuardPage`, `LOGIN_GUARD_DEFAULT_SECONDS`, `LOGIN_GUARD_PAGE_HEADERS`.
+- **Exports** in core: `serializeLoginGuard`, `activeLoginGuard`, `isExplicitLoginPrompt`, `loginGuardBlocks`, `loginGuardRetryUrl`, `renderLoginGuardPage`, `LOGIN_GUARD_DEFAULT_SECONDS`, `LOGIN_GUARD_PAGE_HEADERS`.
 
 ### Action for apps
 
-Nothing breaks. An app that handles `/login?error=` never shows the plugin's page. Point a "Sign in again" button on your error page at `/auth/login?prompt=login`, because a plain `/auth/login` is answered with the plugin's page for 30 seconds after a failure. Apps with a strict Content-Security-Policy need no change: the page uses no script and no style.
+Nothing breaks. An app that handles `/login?error=` never shows the plugin's page. Point a "Sign in again" button on your error page at `/auth/login?prompt=login`, because a plain `/auth/login` is answered with the plugin's page for 30 seconds after a failure (except after `login_required` and the other interaction-needed codes, where it goes through). Apps with a strict Content-Security-Policy need no change: the page uses no script and no style.
 
 ## [1.6.0] — 2026-10-13
 

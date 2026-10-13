@@ -26,6 +26,7 @@ import {
   serializeLoginGuard,
   activeLoginGuard,
   isExplicitLoginPrompt,
+  loginGuardBlocks,
   loginGuardRetryUrl,
   renderLoginGuardPage,
   LOGIN_GUARD_DEFAULT_SECONDS,
@@ -107,6 +108,30 @@ describe('login guard (core)', () => {
     [['login'], false],
   ])('isExplicitLoginPrompt(%j) is %s', (prompt, expected) => {
     expect(isExplicitLoginPrompt(prompt)).toBe(expected);
+  });
+});
+
+describe('loginGuardBlocks (core)', () => {
+  const NEEDS_INTERACTION = ['login_required', 'interaction_required', 'consent_required', 'account_selection_required'];
+  const OTHER_ERRORS = [...CALLBACK_ERROR_CODES, 'invalid_callback'].filter((c) => !NEEDS_INTERACTION.includes(c));
+
+  it('the registry holds all four interaction-needed codes', () => {
+    for (const code of NEEDS_INTERACTION) expect(CALLBACK_ERROR_CODES.has(code)).toBe(true);
+  });
+
+  it.each(NEEDS_INTERACTION)('after %s only prompt=none is blocked', (code) => {
+    expect(loginGuardBlocks(code, 'none')).toBe(true);
+    for (const prompt of [undefined, 'consent', 'login', 'select_account', 'login consent', 'bogus', ['none']]) {
+      expect(loginGuardBlocks(code, prompt)).toBe(false);
+    }
+  });
+
+  it.each(OTHER_ERRORS)('after %s everything but prompt=login and select_account is blocked', (code) => {
+    for (const prompt of [undefined, 'none', 'consent', 'login consent', 'bogus']) {
+      expect(loginGuardBlocks(code, prompt)).toBe(true);
+    }
+    expect(loginGuardBlocks(code, 'login')).toBe(false);
+    expect(loginGuardBlocks(code, 'select_account')).toBe(false);
   });
 });
 
@@ -266,6 +291,9 @@ const HARNESSES: Array<[string, (extra?: Record<string, unknown>) => Promise<Har
   ['Fastify', fastifyHarness],
   ['Express', expressHarness],
 ];
+
+/** The four codes OIDC Core 3.1.2.6 defines as the answer to prompt=none: the user has to interact. */
+const INTERACTION_NEEDED = ['login_required', 'interaction_required', 'consent_required', 'account_selection_required'];
 
 /** Only the Fastify plugin accepts `?returnTo=` on /login. */
 const SUPPORTS_RETURN_TO: Record<string, boolean> = { Fastify: true, Express: false };
@@ -597,6 +625,60 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
       const res = await browser.hit(`/auth/login?prompt=${encodeURIComponent(prompt)}`);
       expectGuardPage(res, 'invalid_callback');
     });
+  });
+
+  // OIDC Core 3.1.2.6: these are the expected answers to prompt=none, and the
+  // client's next step is an interactive request.
+  describe.each(INTERACTION_NEEDED)('after %s', (code) => {
+    /** A browser whose last attempt ended in `code`; Identity waits at its sign-in page. */
+    async function failedWith(): Promise<Browser> {
+      const browser = new Browser(h, 'compliant', false);
+      const started = await browser.hit('/auth/login?prompt=none');
+      const state = new URL(started.location as string).searchParams.get('state') as string;
+      const callback = await browser.hit(`/auth/callback?error=${code}&state=${encodeURIComponent(state)}`);
+      expect(callback.location).toBe(`${FRONTEND}/login?error=${code}`);
+      expect(browser.jar.has('login_guard')).toBe(true);
+      return browser;
+    }
+
+    it('a /login with no prompt goes to Identity and clears the guard', async () => {
+      const browser = await failedWith();
+      const res = await browser.hit('/auth/login');
+      expect(toIdentity(res)).toBe(true);
+      expect(new URL(res.location as string).searchParams.has('prompt')).toBe(false);
+      expect(browser.jar.has('login_guard')).toBe(false);
+      expect(cookieLine(res, 'login_guard')).toBeDefined();
+    });
+
+    it('a /login with prompt=consent goes to Identity and clears the guard', async () => {
+      const browser = await failedWith();
+      const res = await browser.hit('/auth/login?prompt=consent');
+      expect(toIdentity(res)).toBe(true);
+      expect(new URL(res.location as string).searchParams.get('prompt')).toBe('consent');
+      expect(browser.jar.has('login_guard')).toBe(false);
+    });
+
+    it('a /login with prompt=none is refused with the page, and the guard stays', async () => {
+      const browser = await failedWith();
+      const res = await browser.hit('/auth/login?prompt=none');
+      expectGuardPage(res, code);
+      expect(browser.jar.has('login_guard')).toBe(true);
+    });
+
+    it('prompt=login still goes through', async () => {
+      const browser = await failedWith();
+      expect(toIdentity(await browser.hit('/auth/login?prompt=login'))).toBe(true);
+      expect(browser.jar.has('login_guard')).toBe(false);
+    });
+  });
+
+  it('after access_denied a /login with no prompt is still refused with the page', async () => {
+    const browser = new Browser(h, 'compliant', false);
+    const started = await browser.hit('/auth/login');
+    const state = new URL(started.location as string).searchParams.get('state') as string;
+    await browser.hit(`/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`);
+    expectGuardPage(await browser.hit('/auth/login'), 'access_denied');
+    expect(browser.jar.has('login_guard')).toBe(true);
   });
 
   describe('the window', () => {
