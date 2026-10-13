@@ -65,8 +65,22 @@ describe('login guard (core)', () => {
     expect(activeLoginGuard(raw, 0, T0)).toBeUndefined();
   });
 
-  it.each([...CALLBACK_ERROR_CODES, 'invalid_callback'])('round-trips %s', (code) => {
+  it.each([
+    ...CALLBACK_ERROR_CODES,
+    'invalid_callback',
+    'not_authorized',
+    'callback_failed',
+    'state_missing',
+    'state_mismatch',
+  ])('round-trips %s', (code) => {
     expect(activeLoginGuard(serializeLoginGuard(code, T0), 30, T0)).toBe(code);
+  });
+
+  it('refuses free text where the authorize hook reason would go', () => {
+    const stored = serializeLoginGuard('Not on the allowlist burke@fortium.test', T0);
+    expect(JSON.parse(stored)).toEqual({ error: 'invalid_callback', ts: T0 });
+    expect(stored).not.toContain('allowlist');
+    expect(stored).not.toContain('burke@');
   });
 
   it.each([
@@ -182,6 +196,11 @@ describe('login guard page (core)', () => {
       expect(loginGuardRetryUrl('https://app.test/auth/callback', '/deals?id=1&x=2')).toBe(
         'https://app.test/auth/login?prompt=login&returnTo=%2Fdeals%3Fid%3D1%26x%3D2',
       );
+    });
+
+    it('resolves beside /callback when the callback URL ends in a slash', () => {
+      expect(loginGuardRetryUrl('https://app.test/auth/callback/')).toBe('https://app.test/auth/login?prompt=login');
+      expect(loginGuardRetryUrl('https://app.test/auth/callback//')).toBe('https://app.test/auth/login?prompt=login');
     });
 
     it('drops any query on the callback URL', () => {
@@ -348,7 +367,10 @@ class Browser {
   constructor(
     private readonly h: Harness,
     private readonly app: 'compliant' | 'naive' = 'compliant',
-    private readonly identityRefuses = true,
+    /** true: refuse. false: wait at the sign-in page. 'issues-code': the user signs in and Identity returns a code. */
+    private readonly identityRefuses: boolean | 'issues-code' = true,
+    /** A cookie this browser never keeps, as when a proxy strips one Set-Cookie. */
+    private readonly dropCookie?: string,
   ) {}
 
   cookieHeader(): string | undefined {
@@ -362,6 +384,7 @@ class Browser {
       const eq = pair.indexOf('=');
       const name = pair.slice(0, eq);
       const value = pair.slice(eq + 1);
+      if (name === this.dropCookie) continue;
       const lower = attrs.map((a) => a.trim().toLowerCase());
       const expires = lower.find((a) => a.startsWith('expires='));
       const removed =
@@ -389,10 +412,11 @@ class Browser {
       const u = new URL(current);
       if (u.origin === new URL(ISSUER).origin) {
         trace.authorizationRedirects++;
-        if (!this.identityRefuses) return { ...trace, end: 'identity' };
+        if (this.identityRefuses === false) return { ...trace, end: 'identity' };
         const state = u.searchParams.get('state') as string;
         const redirectUri = u.searchParams.get('redirect_uri') as string;
-        current = `${redirectUri}?error=access_denied&state=${encodeURIComponent(state)}`;
+        const answer = this.identityRefuses === 'issues-code' ? 'code=authcode' : 'error=access_denied';
+        current = `${redirectUri}?${answer}&state=${encodeURIComponent(state)}`;
         continue;
       }
       if (u.pathname.startsWith('/auth/')) {
@@ -806,6 +830,189 @@ describe.each(HARNESSES)('%s plugin: login guard', (_name, build) => {
     await browser.hit('/auth/callback?state=gone');
     expect(browser.jar.has('login_guard')).toBe(true);
     await browser.hit('/auth/switch-account');
+    expect(browser.jar.has('login_guard')).toBe(false);
+  });
+});
+
+/**
+ * The other ways a callback ends in an error. Each arms the guard with a fixed
+ * code, so an app whose /login restarts the flow cannot loop on them either.
+ * The redirect the app receives is unchanged.
+ */
+describe.each(HARNESSES)('%s plugin: every failed callback arms the guard', (_name, build) => {
+  const HOOK_REASON = 'Not on the allowlist <b>x</b>';
+  const EMAIL = 'burke@fortium.test';
+  const CLAIMS = { fortium_user_id: 'u-1', email: EMAIL, email_verified: true } as FortiumClaims;
+  const TOKENS = { idToken: 'fake.id.token', accessToken: 'fake-access', expiresIn: 3600, claims: CLAIMS };
+
+  let h: Harness | undefined;
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockImplementation(() => T0);
+  });
+
+  afterEach(async () => {
+    await h?.close();
+    h = undefined;
+    jest.restoreAllMocks();
+    global.fetch = realFetch;
+  });
+
+  async function stateOf(browser: Browser): Promise<string> {
+    const started = await browser.hit('/auth/login');
+    return new URL(started.location as string).searchParams.get('state') as string;
+  }
+
+  /** A callback with a code and this attempt's own state, as Identity returns after a sign-in. */
+  async function codeCallback(browser: Browser): Promise<Res> {
+    const state = await stateOf(browser);
+    return browser.hit(`/auth/callback?code=authcode&state=${encodeURIComponent(state)}`);
+  }
+
+  interface Failure {
+    code: string;
+    /** What the app's /login receives. */
+    appRedirect: string;
+    arrange(): Promise<void>;
+    fail(browser: Browser): Promise<Res>;
+    /** A browser that reaches this failure by following redirects, when there is one. */
+    chainBrowser?(): Browser;
+  }
+
+  const FAILURES: Failure[] = [
+    {
+      code: 'not_authorized',
+      appRedirect: `${FRONTEND}/login?error=${encodeURIComponent(HOOK_REASON)}&email=${encodeURIComponent(EMAIL)}`,
+      async arrange() {
+        jest.spyOn(IdentityClient.prototype, 'exchangeCode').mockResolvedValue(TOKENS);
+        h = await build({
+          authorize: async () => {
+            throw new Error(HOOK_REASON);
+          },
+        });
+      },
+      fail: codeCallback,
+      chainBrowser: () => new Browser(h as Harness, 'naive', 'issues-code'),
+    },
+    {
+      code: 'callback_failed',
+      appRedirect: `${FRONTEND}/login?error=callback_failed`,
+      async arrange() {
+        jest.spyOn(IdentityClient.prototype, 'exchangeCode').mockRejectedValue(new Error('invalid_client'));
+        h = await build();
+      },
+      fail: codeCallback,
+      chainBrowser: () => new Browser(h as Harness, 'naive', 'issues-code'),
+    },
+    {
+      code: 'state_missing',
+      appRedirect: `${FRONTEND}/login?error=state_missing`,
+      async arrange() {
+        h = await build();
+      },
+      fail: (browser) => browser.hit('/auth/callback?code=authcode&state=nostate'),
+      // A browser that never keeps the state cookie: every round trip ends here.
+      chainBrowser: () => new Browser(h as Harness, 'naive', 'issues-code', 'oidc_state'),
+    },
+    {
+      code: 'state_mismatch',
+      appRedirect: `${FRONTEND}/login?error=state_mismatch`,
+      async arrange() {
+        h = await build();
+      },
+      async fail(browser) {
+        await stateOf(browser); // a pending attempt exists, but not the one named below
+        return browser.hit('/auth/callback?code=authcode&state=another-attempt');
+      },
+    },
+  ];
+
+  describe.each(FAILURES)('$code', (failure) => {
+    it('redirects the app exactly as before and arms the guard', async () => {
+      await failure.arrange();
+      const browser = new Browser(h as Harness, 'compliant', false);
+      const res = await failure.fail(browser);
+      expect(res.location).toBe(failure.appRedirect);
+      expect(cookieLine(res, 'login_guard')).toBeDefined();
+      expect(browser.jar.has('login_guard')).toBe(true);
+    });
+
+    it('answers an immediate /login with the guard page, and shows only the fixed code', async () => {
+      await failure.arrange();
+      const browser = new Browser(h as Harness, 'compliant', false);
+      await failure.fail(browser);
+      const res = await browser.hit('/auth/login');
+      expectGuardPage(res, failure.code);
+      for (const secret of ['allowlist', EMAIL, '<b>x']) {
+        expect(res.body).not.toContain(secret);
+        expect(decodeURIComponent(browser.jar.get('login_guard') as string)).not.toContain(secret);
+      }
+    });
+
+    it('prompt=none and a plain login are refused, prompt=login goes through and clears the guard', async () => {
+      await failure.arrange();
+      const browser = new Browser(h as Harness, 'compliant', false);
+      await failure.fail(browser);
+      expectGuardPage(await browser.hit('/auth/login?prompt=none'), failure.code);
+      expectGuardPage(await browser.hit('/auth/login?prompt=consent'), failure.code);
+      const through = await browser.hit('/auth/login?prompt=login');
+      expect(toIdentity(through)).toBe(true);
+      expect(new URL(through.location as string).searchParams.get('prompt')).toBe('login');
+      expect(browser.jar.has('login_guard')).toBe(false);
+    });
+
+    if (failure.chainBrowser) {
+      it('ends on the plugin page when the app /login restarts the flow on every error', async () => {
+        await failure.arrange();
+        const trace = await (failure.chainBrowser as () => Browser)().visit(`${FRONTEND}/login`);
+        // app /login -> /auth/login -> Identity (returns a code) -> /auth/callback
+        // -> app /login?error -> /auth/login -> the plugin's page.
+        expect(trace.hops).toHaveLength(6);
+        expect(trace.authorizationRedirects).toBe(1);
+        expect(trace.end).toBe('page');
+        expectGuardPage(trace.last as Res, failure.code);
+      });
+    }
+  });
+
+  it('a successful sign-in after an authorize-hook rejection clears the guard', async () => {
+    jest.spyOn(IdentityClient.prototype, 'exchangeCode').mockResolvedValue(TOKENS);
+    const authorize = jest
+      .fn<(claims: FortiumClaims) => Promise<Record<string, unknown>>>()
+      .mockRejectedValueOnce(new Error(HOOK_REASON))
+      .mockResolvedValue({});
+    h = await build({ authorize });
+
+    const browser = new Browser(h, 'compliant', false);
+    // Two attempts in flight (two tabs): the first is rejected, the second succeeds.
+    const a = await stateOf(browser);
+    const b = await stateOf(browser);
+    const rejected = await browser.hit(`/auth/callback?code=authcode&state=${encodeURIComponent(a)}`);
+    expect(rejected.location).toContain(`${FRONTEND}/login?error=`);
+    expectGuardPage(await browser.hit('/auth/login'), 'not_authorized');
+
+    const ok = await browser.hit(`/auth/callback?code=authcode&state=${encodeURIComponent(b)}`);
+    expect(ok.location).toBe(`${FRONTEND}/dashboard`);
+    expect(browser.jar.has('login_guard')).toBe(false);
+    expect(toIdentity(await browser.hit('/auth/login'))).toBe(true);
+  });
+
+  it('a successful sign-in after a failed token exchange clears the guard', async () => {
+    jest
+      .spyOn(IdentityClient.prototype, 'exchangeCode')
+      .mockRejectedValueOnce(new Error('invalid_client'))
+      .mockResolvedValue(TOKENS);
+    h = await build();
+
+    const browser = new Browser(h, 'compliant', false);
+    const a = await stateOf(browser);
+    const b = await stateOf(browser);
+    const failed = await browser.hit(`/auth/callback?code=authcode&state=${encodeURIComponent(a)}`);
+    expect(failed.location).toBe(`${FRONTEND}/login?error=callback_failed`);
+    expectGuardPage(await browser.hit('/auth/login'), 'callback_failed');
+
+    const ok = await browser.hit(`/auth/callback?code=authcode&state=${encodeURIComponent(b)}`);
+    expect(ok.location).toBe(`${FRONTEND}/dashboard`);
     expect(browser.jar.has('login_guard')).toBe(false);
   });
 });

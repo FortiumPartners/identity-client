@@ -475,6 +475,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
         reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
         reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
+        markLoginFailed(reply, 'state_missing');
         return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 
@@ -484,6 +485,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       const oidcState = selectPendingState(pendingStates, state);
       if (!oidcState) {
         reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+        markLoginFailed(reply, 'state_mismatch');
         return reply.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
       }
 
@@ -507,6 +509,8 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
         } catch (authError) {
           const reason = authError instanceof Error ? authError.message : 'not_authorized';
           const emailParam = claims.email ? `&email=${encodeURIComponent(claims.email)}` : '';
+          // The guard records a fixed code, never the hook's free-text reason or the email.
+          markLoginFailed(reply, 'not_authorized');
           return reply.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}${emailParam}`);
         }
       }
@@ -539,6 +543,7 @@ async function identityPluginImpl(app: FastifyInstance, opts: IdentityPluginOpti
       reply.redirect(oidcState.returnTo ? `${opts.frontendUrl}${oidcState.returnTo}` : postLoginRedirect);
     } catch (error) {
       app.log.error({ err: error, message: error instanceof Error ? error.message : String(error) }, 'OIDC callback failed');
+      markLoginFailed(reply, 'callback_failed');
       reply.redirect(`${opts.frontendUrl}/login?error=callback_failed`);
     }
   });

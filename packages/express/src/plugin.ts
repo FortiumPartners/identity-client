@@ -458,6 +458,7 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
         res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
         res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         res.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
+        markLoginFailed(res, 'state_missing');
         return res.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 
@@ -467,6 +468,7 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
       const oidcState = selectPendingState(pendingStates, state);
       if (!oidcState) {
         res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+        markLoginFailed(res, 'state_mismatch');
         return res.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
       }
 
@@ -491,6 +493,8 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
         } catch (authError) {
           const reason = authError instanceof Error ? authError.message : 'not_authorized';
           const emailParam = claims.email ? `&email=${encodeURIComponent(claims.email)}` : '';
+          // The guard records a fixed code, never the hook's free-text reason or the email.
+          markLoginFailed(res, 'not_authorized');
           return res.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}${emailParam}`);
         }
       }
@@ -532,6 +536,7 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
       res.redirect(postLoginRedirect);
     } catch (error) {
       console.error('OIDC callback failed:', error);
+      markLoginFailed(res, 'callback_failed');
       res.redirect(`${opts.frontendUrl}/login?error=callback_failed`);
     }
   });

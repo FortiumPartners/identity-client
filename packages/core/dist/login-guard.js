@@ -8,18 +8,30 @@
  * be gone (it lives 10 minutes, and an invalid_callback has no matching attempt
  * to consume). Pure helpers, no I/O: the caller owns cookie read and write.
  */
-import { CALLBACK_ERROR_CODES, sanitizeCallbackError } from './callback-error.js';
+import { CALLBACK_ERROR_CODES } from './callback-error.js';
 /** How long, in seconds, a failed callback blocks the next /login by default. */
 export const LOGIN_GUARD_DEFAULT_SECONDS = 30;
-/** What a guard can record: a forwarded OAuth error code, or invalid_callback. */
-const GUARD_ERRORS = new Set([...CALLBACK_ERROR_CODES, 'invalid_callback']);
+/**
+ * What a guard can record: a registered OAuth error code, or one of the fixed
+ * codes the plugins' own callback failures map to. Never free text: the
+ * authorize hook's reason and the user's email stay out of the cookie.
+ */
+const GUARD_ERRORS = new Set([
+    ...CALLBACK_ERROR_CODES,
+    'invalid_callback',
+    'not_authorized',
+    'callback_failed',
+    'state_missing',
+    'state_mismatch',
+]);
 /**
  * Cookie value recording that the last attempt ended in `error` at `now`.
- * The error goes through sanitizeCallbackError, so an attacker-controlled
- * `?error=` can only ever store a registered code or invalid_callback.
+ * Anything outside GUARD_ERRORS is stored as invalid_callback, so an
+ * attacker-controlled `?error=` can only ever store an allowlisted code.
  */
 export function serializeLoginGuard(error, now = Date.now()) {
-    return JSON.stringify({ error: sanitizeCallbackError(error) ?? 'invalid_callback', ts: now });
+    const code = typeof error === 'string' && GUARD_ERRORS.has(error) ? error : 'invalid_callback';
+    return JSON.stringify({ error: code, ts: now });
 }
 /**
  * The error code to send the browser to while the guard is fresh, or undefined
@@ -60,7 +72,10 @@ export const LOGIN_GUARD_PAGE_HEADERS = Object.freeze({
  * so a retry lands where the original request meant to.
  */
 export function loginGuardRetryUrl(callbackUrl, returnTo) {
-    const url = new URL('login', callbackUrl);
+    // A trailing slash would make 'login' resolve under /callback/, not beside it.
+    const base = new URL(callbackUrl);
+    base.pathname = base.pathname.replace(/\/+$/, '');
+    const url = new URL('login', base);
     url.search = '';
     url.searchParams.set('prompt', 'login');
     if (returnTo)

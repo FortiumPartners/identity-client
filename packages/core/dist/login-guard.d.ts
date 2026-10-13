@@ -12,8 +12,8 @@
 export declare const LOGIN_GUARD_DEFAULT_SECONDS = 30;
 /**
  * Cookie value recording that the last attempt ended in `error` at `now`.
- * The error goes through sanitizeCallbackError, so an attacker-controlled
- * `?error=` can only ever store a registered code or invalid_callback.
+ * Anything outside GUARD_ERRORS is stored as invalid_callback, so an
+ * attacker-controlled `?error=` can only ever store an allowlisted code.
  */
 export declare function serializeLoginGuard(error: unknown, now?: number): string;
 /**
