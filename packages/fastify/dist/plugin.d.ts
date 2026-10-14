@@ -50,6 +50,17 @@ export interface IdentityPluginOptions {
      */
     cookieSameSite?: 'lax' | 'strict' | 'none';
     /**
+     * Seconds after a callback that ended in an error during which GET /auth/login
+     * refuses to start a new authorization request and answers with a page
+     * that has a "Try again" link instead (default: 30). A `prompt=login`
+     * or `prompt=select_account` request is an explicit user action and is not
+     * refused. After `login_required`, `interaction_required`,
+     * `consent_required` or `account_selection_required` (the expected answers
+     * to `prompt=none`) only a `prompt=none` request is refused, so the
+     * interactive step that follows goes through. 0 turns the guard off.
+     */
+    loginGuardSeconds?: number;
+    /**
      * Called after Identity authenticates the user.
      * Use to check authorization (e.g., admin allowlist) and return extra session data.
      * Throw to reject the login. Return extra fields to include in the session JWT.

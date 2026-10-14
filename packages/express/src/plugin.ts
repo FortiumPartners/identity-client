@@ -22,6 +22,13 @@ import {
   serializePendingStates,
   sanitizeLoginHint,
   sanitizeCallbackError,
+  serializeLoginGuard,
+  activeLoginGuard,
+  loginGuardBlocks,
+  loginGuardRetryUrl,
+  renderLoginGuardPage,
+  LOGIN_GUARD_DEFAULT_SECONDS,
+  LOGIN_GUARD_PAGE_HEADERS,
   serializeAccessToken,
   usableAccessToken,
 } from '@fortium/identity-client';
@@ -65,6 +72,17 @@ export interface IdentityPluginOptions {
   postLogoutPath?: string;
   /** Cookie domain for cross-subdomain sharing (e.g., '.lxp.fortiumsoftware.com') */
   cookieDomain?: string;
+  /**
+   * Seconds after a callback that ended in an error during which GET /login
+   * refuses to start a new authorization request and answers with a page
+   * that has a "Try again" link instead (default: 30). A `prompt=login`
+   * or `prompt=select_account` request is an explicit user action and is not
+   * refused. After `login_required`, `interaction_required`,
+   * `consent_required` or `account_selection_required` (the expected answers
+   * to `prompt=none`) only a `prompt=none` request is refused, so the
+   * interactive step that follows goes through. 0 turns the guard off.
+   */
+  loginGuardSeconds?: number;
 
   /**
    * Called after Identity authenticates the user.
@@ -107,11 +125,17 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
   const AUTH_TOKEN_COOKIE = cookieName(prefix, 'auth_token');
   const ID_TOKEN_COOKIE = cookieName(prefix, 'id_token');
   const REFRESH_TOKEN_COOKIE = cookieName(prefix, 'refresh_token');
+  const LOGIN_GUARD_COOKIE = cookieName(prefix, 'login_guard');
   // Distinct from the `access_token` apps set through extraCookies (Talent):
   // this one also records the token's expiry, which /widget-token needs.
   const ACCESS_TOKEN_COOKIE = cookieName(prefix, 'identity_access_token');
 
   const isProd = process.env.NODE_ENV === 'production';
+
+  const loginGuardSeconds = opts.loginGuardSeconds ?? LOGIN_GUARD_DEFAULT_SECONDS;
+  if (!Number.isFinite(loginGuardSeconds) || loginGuardSeconds < 0) {
+    throw new TypeError(`loginGuardSeconds must be a number of seconds >= 0, got '${String(opts.loginGuardSeconds)}'`);
+  }
 
   const client = new IdentityClient({
     issuer: opts.issuer,
@@ -160,6 +184,13 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
     const value = req.signedCookies?.[name];
     if (!value) return null;
     return value;
+  }
+
+  // Helper: record that this browser's callback just ended in an error, so
+  // /login does not start another attempt straight away (loginGuardSeconds).
+  function markLoginFailed(res: Response, error: unknown) {
+    if (loginGuardSeconds === 0) return;
+    res.cookie(LOGIN_GUARD_COOKIE, serializeLoginGuard(error), cookieOpts(Math.ceil(loginGuardSeconds)));
   }
 
   // Helper: keep the user's access token for /widget-token's subject_token,
@@ -341,9 +372,30 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
   // ------------------------------------------------------------------
   router.get('/login', async (req: Request, res: Response) => {
     try {
+      const promptParam = req.query.prompt;
+
+      // After a callback that ended in an error, do not send the browser back
+      // to Identity: it would be refused again, and an app whose /login
+      // restarts the flow would loop. Answer with the plugin's own page, which
+      // redirects nowhere, so the chain ends here whatever the app's /login
+      // does. (/callback already sent the browser to the app's error page
+      // once.) loginGuardBlocks decides which requests it refuses: not
+      // prompt=login or prompt=select_account (explicit user actions, OIDC Core
+      // section 3.1.2.1), and after login_required and the other
+      // interaction-needed codes (section 3.1.2.6) only prompt=none. A request
+      // that goes through ends the guard.
+      const guardCookie = readSignedCookie(req, LOGIN_GUARD_COOKIE);
+      const guardedError = loginGuardSeconds > 0 ? activeLoginGuard(guardCookie, loginGuardSeconds) : undefined;
+      if (guardedError && loginGuardBlocks(guardedError, promptParam)) {
+        return res
+          .status(200)
+          .set(LOGIN_GUARD_PAGE_HEADERS)
+          .send(renderLoginGuardPage(guardedError, loginGuardRetryUrl(opts.callbackUrl)));
+      }
+      if (guardCookie) res.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
+
       // Optional OIDC prompt and login_hint. Core forwards a prompt only when
       // it is allowed and a login_hint only when sanitizeLoginHint accepts it.
-      const promptParam = req.query.prompt;
       const loginHint = await loginHintFor(req);
 
       // Use the configured callbackUrl directly — deriving from req.hostname
@@ -386,11 +438,13 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
             res.cookie(OIDC_STATE_COOKIE, serializePendingStates(remainingStates), cookieOpts(600));
           }
           const errorCode = sanitizeCallbackError(error) ?? 'invalid_callback';
+          markLoginFailed(res, errorCode);
           return res.redirect(`${opts.frontendUrl}/login?error=${errorCode}`);
         }
       }
 
       if (!code || !state) {
+        markLoginFailed(res, 'invalid_callback');
         return res.redirect(`${opts.frontendUrl}/login?error=invalid_callback`);
       }
 
@@ -404,6 +458,7 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
         res.clearCookie(ID_TOKEN_COOKIE, clearOpts);
         res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         res.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
+        markLoginFailed(res, 'state_missing');
         return res.redirect(`${opts.frontendUrl}/login?error=state_missing`);
       }
 
@@ -413,6 +468,7 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
       const oidcState = selectPendingState(pendingStates, state);
       if (!oidcState) {
         res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+        markLoginFailed(res, 'state_mismatch');
         return res.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
       }
 
@@ -437,6 +493,8 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
         } catch (authError) {
           const reason = authError instanceof Error ? authError.message : 'not_authorized';
           const emailParam = claims.email ? `&email=${encodeURIComponent(claims.email)}` : '';
+          // The guard records a fixed code, never the hook's free-text reason or the email.
+          markLoginFailed(res, 'not_authorized');
           return res.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}${emailParam}`);
         }
       }
@@ -448,6 +506,9 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
         ...extraSessionData,
       };
       const sessionToken = await createSessionToken(sessionPayload, sessionConfig);
+
+      // A successful sign-in ends the guard.
+      res.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
 
       // Set cookies
       res.cookie(AUTH_TOKEN_COOKIE, sessionToken, cookieOpts(86400)); // 24h
@@ -475,6 +536,7 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
       res.redirect(postLoginRedirect);
     } catch (error) {
       console.error('OIDC callback failed:', error);
+      markLoginFailed(res, 'callback_failed');
       res.redirect(`${opts.frontendUrl}/login?error=callback_failed`);
     }
   });
@@ -771,6 +833,7 @@ export function createIdentityRouter(opts: IdentityPluginOptions): Router {
     res.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
     res.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
     res.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+    res.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
 
     const identityBase = opts.issuer.replace(/\/oidc$/, '');
     const returnTo = `${opts.frontendUrl}/login?switch=1`;

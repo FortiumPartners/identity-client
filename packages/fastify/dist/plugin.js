@@ -9,7 +9,7 @@
  */
 import fp from 'fastify-plugin';
 import '@fastify/cookie'; // Type augmentations for cookies
-import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, sanitizeReturnTo, sanitizeLoginHint, sanitizeCallbackError, serializeAccessToken, usableAccessToken, } from '@fortium/identity-client';
+import { IdentityClient, createSessionToken, verifySessionToken, verifyM2MToken, parsePendingStates, appendPendingState, selectPendingState, removePendingState, serializePendingStates, sanitizeReturnTo, sanitizeLoginHint, sanitizeCallbackError, serializeLoginGuard, activeLoginGuard, loginGuardBlocks, loginGuardRetryUrl, renderLoginGuardPage, LOGIN_GUARD_DEFAULT_SECONDS, LOGIN_GUARD_PAGE_HEADERS, serializeAccessToken, usableAccessToken, } from '@fortium/identity-client';
 // Cookie name helpers
 function cookieName(prefix, name) {
     return prefix ? `${prefix}_${name}` : name;
@@ -21,7 +21,12 @@ async function identityPluginImpl(app, opts) {
     const ID_TOKEN_COOKIE = cookieName(prefix, 'id_token');
     const REFRESH_TOKEN_COOKIE = cookieName(prefix, 'refresh_token');
     const ACCESS_TOKEN_COOKIE = cookieName(prefix, 'identity_access_token');
+    const LOGIN_GUARD_COOKIE = cookieName(prefix, 'login_guard');
     const isProd = process.env.NODE_ENV === 'production';
+    const loginGuardSeconds = opts.loginGuardSeconds ?? LOGIN_GUARD_DEFAULT_SECONDS;
+    if (!Number.isFinite(loginGuardSeconds) || loginGuardSeconds < 0) {
+        throw new TypeError(`loginGuardSeconds must be a number of seconds >= 0, got '${String(opts.loginGuardSeconds)}'`);
+    }
     const client = new IdentityClient({
         issuer: opts.issuer,
         clientId: opts.clientId,
@@ -71,6 +76,13 @@ async function identityPluginImpl(app, opts) {
         if (!unsigned.valid || !unsigned.value)
             return null;
         return unsigned.value;
+    }
+    // Helper: record that this browser's callback just ended in an error, so
+    // /login does not start another attempt straight away (loginGuardSeconds).
+    function markLoginFailed(reply, error) {
+        if (loginGuardSeconds === 0)
+            return;
+        reply.setCookie(LOGIN_GUARD_COOKIE, serializeLoginGuard(error), cookieOpts(Math.ceil(loginGuardSeconds)));
     }
     // Helper: keep the user's access token for /widget-token's subject_token,
     // with the fortium_user_id it was issued to (`sub`), taken from a validated
@@ -207,9 +219,32 @@ async function identityPluginImpl(app, opts) {
     // GET /auth/login — Redirect to Identity for OIDC authentication
     // ------------------------------------------------------------------
     app.get('/login', async (request, reply) => {
+        const promptParam = request.query.prompt;
+        // After a callback that ended in an error, do not send the browser back
+        // to Identity: it would be refused again, and an app whose /login
+        // restarts the flow would loop. Answer with the plugin's own page, which
+        // redirects nowhere, so the chain ends here whatever the app's /login
+        // does. (/callback already sent the browser to the app's error page
+        // once.) loginGuardBlocks decides which requests it refuses: not
+        // prompt=login or prompt=select_account (explicit user actions, OIDC Core
+        // section 3.1.2.1), and after login_required and the other
+        // interaction-needed codes (section 3.1.2.6) only prompt=none. A request
+        // that goes through ends the guard.
+        const guardCookie = unsign(request, LOGIN_GUARD_COOKIE);
+        const guardedError = loginGuardSeconds > 0 ? activeLoginGuard(guardCookie, loginGuardSeconds) : undefined;
+        if (guardedError && loginGuardBlocks(guardedError, promptParam)) {
+            // The retry link keeps the request's returnTo only if it passes the
+            // same validation /login applies to it.
+            const retryUrl = loginGuardRetryUrl(opts.callbackUrl, sanitizeReturnTo(request.query.returnTo));
+            return reply
+                .status(200)
+                .headers(LOGIN_GUARD_PAGE_HEADERS)
+                .send(renderLoginGuardPage(guardedError, retryUrl));
+        }
+        if (guardCookie)
+            reply.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
         // Optional OIDC prompt and login_hint. Core forwards a prompt only when
         // it is allowed and a login_hint only when sanitizeLoginHint accepts it.
-        const promptParam = request.query.prompt;
         const loginHint = await loginHintFor(request);
         // Use the configured callbackUrl directly — deriving from request.hostname
         // breaks behind reverse proxies (e.g., nginx → Render internal hostname).
@@ -260,10 +295,12 @@ async function identityPluginImpl(app, opts) {
                         reply.setCookie(OIDC_STATE_COOKIE, serializePendingStates(remainingStates), cookieOpts(600));
                     }
                     const errorCode = sanitizeCallbackError(error) ?? 'invalid_callback';
+                    markLoginFailed(reply, errorCode);
                     return reply.redirect(`${opts.frontendUrl}/login?error=${errorCode}`);
                 }
             }
             if (!code || !state) {
+                markLoginFailed(reply, 'invalid_callback');
                 return reply.redirect(`${opts.frontendUrl}/login?error=invalid_callback`);
             }
             // Validate OIDC state from cookie
@@ -278,6 +315,7 @@ async function identityPluginImpl(app, opts) {
                 reply.clearCookie(ID_TOKEN_COOKIE, clearOpts);
                 reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
                 reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
+                markLoginFailed(reply, 'state_missing');
                 return reply.redirect(`${opts.frontendUrl}/login?error=state_missing`);
             }
             // Select the pending attempt whose state matches the returned param.
@@ -286,6 +324,7 @@ async function identityPluginImpl(app, opts) {
             const oidcState = selectPendingState(pendingStates, state);
             if (!oidcState) {
                 reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+                markLoginFailed(reply, 'state_mismatch');
                 return reply.redirect(`${opts.frontendUrl}/login?error=state_mismatch`);
             }
             // Remove the consumed attempt, leaving any other in-flight attempts intact.
@@ -308,6 +347,8 @@ async function identityPluginImpl(app, opts) {
                 catch (authError) {
                     const reason = authError instanceof Error ? authError.message : 'not_authorized';
                     const emailParam = claims.email ? `&email=${encodeURIComponent(claims.email)}` : '';
+                    // The guard records a fixed code, never the hook's free-text reason or the email.
+                    markLoginFailed(reply, 'not_authorized');
                     return reply.redirect(`${opts.frontendUrl}/login?error=${encodeURIComponent(reason)}${emailParam}`);
                 }
             }
@@ -318,6 +359,8 @@ async function identityPluginImpl(app, opts) {
                 ...extraSessionData,
             };
             const sessionToken = await createSessionToken(sessionPayload, sessionConfig);
+            // A successful sign-in ends the guard.
+            reply.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
             // Set cookies
             reply.setCookie(AUTH_TOKEN_COOKIE, sessionToken, cookieOpts(86400)); // 24h
             reply.setCookie(ID_TOKEN_COOKIE, idToken, cookieOpts(86400)); // 24h
@@ -335,6 +378,7 @@ async function identityPluginImpl(app, opts) {
         }
         catch (error) {
             app.log.error({ err: error, message: error instanceof Error ? error.message : String(error) }, 'OIDC callback failed');
+            markLoginFailed(reply, 'callback_failed');
             reply.redirect(`${opts.frontendUrl}/login?error=callback_failed`);
         }
     });
@@ -569,6 +613,7 @@ async function identityPluginImpl(app, opts) {
         reply.clearCookie(REFRESH_TOKEN_COOKIE, clearOpts);
         reply.clearCookie(ACCESS_TOKEN_COOKIE, clearOpts);
         reply.clearCookie(OIDC_STATE_COOKIE, clearOpts);
+        reply.clearCookie(LOGIN_GUARD_COOKIE, clearOpts);
         const identityBase = opts.issuer.replace(/\/oidc$/, '');
         const returnTo = `${opts.frontendUrl}/login?switch=1`;
         reply.redirect(`${identityBase}/auth/signout-and-retry?client_id=${encodeURIComponent(opts.clientId)}&return_to=${encodeURIComponent(returnTo)}`);

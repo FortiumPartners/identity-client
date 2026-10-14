@@ -148,6 +148,14 @@ If Identity redirects to `/callback` with an OAuth error instead of a code (a us
 
 Your `/login` page must render `error=access_denied` as a refusal and must not start a new login because of it: restarting the login sends the browser back to Identity, which refuses again, in a loop.
 
+### After a failed callback, `/login` refuses for 30 seconds (since 1.7.0)
+
+When `/callback` ends in an error, the plugin sets a signed, httpOnly `login_guard` cookie. Every failed callback arms it: a forwarded OAuth error, `invalid_callback`, `state_missing`, `state_mismatch`, `not_authorized` (your `authorize` hook rejected the user) and `callback_failed` (the token exchange or anything else threw). The cookie stores only a registered OAuth code or one of those fixed names, never the hook's reason or the user's email. The redirect your app receives for each is unchanged. While it is fresh, `GET /login` does not start an authorization request and does not redirect. It answers with a small page of its own (status 200, no script, no style, no external resource) that shows the error code and one "Try again" link to `/login?prompt=login`. No redirect leaves that response, so a redirect loop ends there whatever your own `/login` does. The first failed callback still redirects to `<frontendUrl>/login?error=<code>` as above, so an app that handles the error never shows the plugin's page. Set `loginGuardSeconds` to change the window (default 30, `0` turns the guard off).
+
+A `/login` request with `prompt=login` or `prompt=select_account` is an explicit user action: it goes through and clears the guard, as does a successful callback. A "Sign in again" button on your error page that links to a plain `/auth/login` shows the plugin's page for up to 30 seconds after a failure, so point it at `/auth/login?prompt=login`.
+
+The silent check is the exception. `login_required`, `interaction_required`, `consent_required` and `account_selection_required` are the expected answers to `/login?prompt=none` (OIDC Core section 3.1.2.6), and the next step is an interactive request. After one of those, only another `prompt=none` is refused; any other `/login` goes through and clears the guard. After every other error, all requests except `prompt=login` and `prompt=select_account` are refused.
+
 ### `/widget-token` — RFC 8693 token exchange
 
 ```http
